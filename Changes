@@ -1,0 +1,6 @@
+Revision history for Perl extension Net::FTPSSL.
+
+0.01  Sat May 21 20:55:58 2005
+	- original version; created by h2xs 1.23 with options
+		-AX Net::FTPSSL
+
