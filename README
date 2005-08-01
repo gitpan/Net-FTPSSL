@@ -1,15 +1,9 @@
-Net-FTPSSL version 0.01
+Net-FTPSSL version 0.02
 =======================
 
 Net::FTPSSL is an object oriented Perl module which implements a simple
 FTP client over a Secure Shell Layer (SSL) connection written following
 the directives described in RFC959 and RFC2228
-
-A README file is required for CPAN modules since CPAN extracts the
-README file from a module distribution so that people browsing the
-archive can use it get an idea of the modules uses. It is usually a
-good idea to provide version information here so that people can
-decide whether fixes for the module are worth downloading.
 
 INSTALLATION
 

@@ -5,22 +5,43 @@
 
 # change 'tests => 1' to 'tests => last_test_to_print';
 
-use Test::More qw( no_plan );
+use Test::More tests => 4;
 BEGIN { use_ok('Net::FTPSSL') }
 
-ok(1);
+my( $address, $server, $port, $user, $pass, $mode ); 
 
-my $ftp =
-  Net::FTPSSL->new( 'ftp.autistici.org', port => 21, encryption => EXP_CRYPT )
-  or die "Can't open ftp.autistici.org";
+print "\tServer address ( host[:port] ): ";
+chop( $address = <STDIN> );
 
-isa_ok( $ftp, 'Net::FTPSSL', 'Object creation' );
+print "\tConnection mode (I)mplicit or (E)xplicit. Default 'E': ";
+chop( $mode = <STDIN> );
 
-ok( $ftp->login( 'anonymous', 'user@localhost' ), 'Login' );
+print "\tUser (default 'anonymous'): ";
+chop( $user = <STDIN> );
 
-ok( scalar $ftp->list() != 0, 'list() command' );
+print "\tPassword (default 'user\@localhost'): ";
+chop( $pass = <STDIN> );
 
-$ftp->quit();
+( $server, $port ) = split( /:/, $address );
+$port = 21 unless $port;
+$mode = EXP_CRYPT unless $mode =~ /(I|E)/;
+$user = 'anonymous' unless $user;
+$pass = 'user@localhost' unless $pass;
+
+SKIP: {
+  skip 'Server address not defined', 4 unless $server;
+  my $ftp =
+    Net::FTPSSL->new( $server, port => $port, encryption => $mode )
+    or die "Can't open $server:$port";
+
+  isa_ok( $ftp, 'Net::FTPSSL', 'Net::FTP object creation' );
+
+  ok( $ftp->login( $user, $pass ), 'Login' );
+
+  ok( scalar $ftp->list() != 0, 'list() command (PASV() command worked too!)' );
+
+  $ftp->quit();
+}
 
 #########################
 

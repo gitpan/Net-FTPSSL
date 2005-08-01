@@ -1,7 +1,8 @@
 # File	  : Net::FTPSSL
 # Author  : kral <kral at paranici dot org>
 # Created : 01 March 2005
-# Version : 0.01
+# Version : 0.02
+# Revision: $Id: FTPSSL.pm,v 1.11 2005/07/31 10:21:30 kral Exp $
 
 package Net::FTPSSL;
 
@@ -13,7 +14,7 @@ use IO::Socket::INET;
 use Net::SSLeay::Handle;
 use Carp qw( carp croak );
 
-$VERSION = "0.01";
+$VERSION = "0.02";
 @EXPORT  = qw( IMP_CRYPT EXP_CRYPT );
 
 
@@ -132,7 +133,7 @@ sub pasv {
 
   unless ( substr( $msg, 0, 1 ) == CMD_OK ) { return 0; }
 
-  $msg =~ m/(\d+)\s(.*)\(((\d+,?)+)\)\./
+  $msg =~ m/(\d+)\s(.*)\(((\d+,?)+)\)\.?/
     ;    # [227] [Entering Passive Mode] ([h1,h2,h3,h4,p1,p2]).
 
   my @address = split( /,/, $3 );
@@ -173,7 +174,7 @@ sub list {
   $io->close();
   $self->response;    # For catch "226 Closing data connection."
 
-  return $dati ? split( /\n/, $dati ) : undef;
+  return $dati ? split( /\n/, $dati ) : ();
 }
 
 sub nlst {
@@ -200,7 +201,7 @@ sub nlst {
   $io->close();
   $self->response;    # For catch "226 Closing data connection."
 
-  return $dati ? split( /\n/, $dati ) : undef;
+  return $dati ? split( /\n/, $dati ) : ();
 }
 
 sub get {
@@ -281,16 +282,17 @@ sub put {
     }
   }
 
-	if( defined ${ *$self }{'alloc_size'} ) {
-		delete ${ *$self }{'alloc_size'};
-	} else {
-  	if( -f $file_loc ) {
+# If alloc_size is already set, I skip this part
+	unless( defined ${ *$self }{'alloc_size'} ) {
+		if( -f $file_loc ) {
 	  	my $size = -s $file_loc;
 		  $self->alloc($size);
 	  }
 	}
+# the ALLO command gave, so I clear the var for future puts.
+	delete ${ *$self }{'alloc_size'};
 
-  if ( $self->_stor($file_rem) ) {
+	if ( $self->_stor($file_rem) ) {
 
     $io = new IO::Handle;
     tie( *$io, "Net::SSLeay::Handle", ${*$self}{'data_ch'} );
@@ -334,15 +336,14 @@ sub uput {									# Unique put (STOU command)
     }
   }
 
-	if( defined ${ *$self }{'alloc_size'} ) {
-		delete ${ *$self }{'alloc_size'};
-	} else {
+	unless( defined ${ *$self }{'alloc_size'} ) {
   	if( -f $file_loc ) {
 	  	my $size = -s $file_loc;
 		  $self->alloc($size);
 	  }
 	}
-
+	delete ${ *$self }{'alloc_size'};
+	
   if ( $self->_stou($file_rem) ) {
 
     $io = new IO::Handle;
@@ -421,6 +422,12 @@ sub rename {
 	return 0 unless $self->_rnto($new_name);
 	return 1;
 	
+}
+
+sub cdup {
+	my $self = shift;
+	$self->command("CDUP");
+	return ( $self->response == CMD_OK );
 }
 
 #-----------------------------------------------------------------------
@@ -533,6 +540,7 @@ sub _rnto {
 	return ( $self->response == CMD_OK );
 }
 
+
 #-----------------------------------------------------------------------
 #  Messages handler
 #-----------------------------------------------------------------------
@@ -609,7 +617,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.01
+=head1 VERSION 0.02
 
 =head1 SYNOPSIS
 
@@ -703,6 +711,8 @@ Same as C<list> but returns the list in this format:
  foo
  pub
  bar
+
+Personally, I suggest to use list instead of nlst.
 
 =item ascii
 

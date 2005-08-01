@@ -1,6 +1,13 @@
 Revision history for Perl extension Net::FTPSSL.
 
-0.01  Sat May 21 20:55:58 2005
+0.02  2005-05-20 22:12:34
+  - Change the returning data of list() and nlst()
+  - Fix ALLO command call in put() and uput() methods
+  - Correct the PASV parsing regexp (thanks to sfr)
+  - Makefile no longer requires Perl 5.8.4
+  - Change the test. Now it is interactive.
+
+0.01  2005-05-21 20:55:58
 	- original version; created by h2xs 1.23 with options
 		-AX Net::FTPSSL
 
