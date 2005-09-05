@@ -2,5 +2,6 @@ Changes
 Makefile.PL
 MANIFEST
 README
-t/Net-FTPSSL.t
+t/00-basic.t
+t/10-complex.t
 FTPSSL.pm
