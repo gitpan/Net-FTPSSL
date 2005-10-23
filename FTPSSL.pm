@@ -1,8 +1,8 @@
 # File	  : Net::FTPSSL
 # Author  : kral <kral at paranici dot org>
 # Created : 01 March 2005
-# Version : 0.03
-# Revision: $Id: FTPSSL.pm,v 1.22 2005/09/05 12:27:33 kral Exp $
+# Version : 0.04
+# Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
 
@@ -15,7 +15,7 @@ use Net::SSLeay::Handle;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.03";
+$VERSION = "0.04";
 @EXPORT  = qw( IMP_CRYPT EXP_CRYPT );
 
 use constant IMP_CRYPT => "I";
@@ -67,7 +67,7 @@ sub new {
     command( $socket, "AUTH", "TLS" );
     response($socket);
   }
-
+	
   # Turn the clear connection in a SSL one.
   my $obj = $type->start_SSL( $socket, SSL_version => "TLSv1" )
     or croak IO::Socket::SSL::errstr();
@@ -497,6 +497,14 @@ sub rmdir {
 	return ( $self->response == CMD_OK );	
 }
 
+sub site {
+  my $self = shift;
+  my $args = shift;
+
+  $self->command("SITE", $args);
+  return ( $self->response == CMD_OK );
+}
+
 #-----------------------------------------------------------------------
 #  Type setting function
 #-----------------------------------------------------------------------
@@ -649,17 +657,25 @@ sub response {
   my $self = shift;
   my ( $data, $code );
 
-  while (1) {
+	my $read = sysread( $self, $data, 4096);
+	unless( defined $read ) {
+		croak "Can't read on socket: $!";
+	}
 
-    $data = $self->getline();
-    $data =~ m/^(\d+)(\-?)(.*)$/s;
+	my @lines = split( "\015\012", $data );
+		
+  foreach my $line ( @lines ) {
+
+# 	$data = $self->getline();	
+#   $data =~ m/^(\d+)(\-?)(.*)$/s;
+    $line =~ m/^(\d+)(\-?)(.*)$/s;
 
     $code = $1;
-    print STDERR "<<< " . $data
+    print STDERR "<<< " . $line ."\n"
       if ref($self) eq "Net::FTPSSL" && ${*$self}{'debug'};
 
     if ( ref($self) eq "Net::FTPSSL" ) {
-      ${*$self}{'last_ftp_msg'} = $data;
+      ${*$self}{'last_ftp_msg'} = $line;
     }
 
     last if $2 ne '-';
@@ -683,19 +699,19 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.03
+=head1 VERSION 0.04
 
 =head1 SYNOPSIS
 
   use Net::FTPSSL;
 
   my $ftps = Net::FTPSSL->new('ftp.yoursecureserver.com', 
-                              port => 21,
-                              encryption => 'E',
-                              debug => 1) 
+                              Port => 21,
+                              Encryption => 'E',
+                              Debug => 1) 
     or die "Can't open ftp.yoursecureserver.com";
 
-  $ftp->login('anonymous', 'user@localhost') 
+  $ftps->login('anonymous', 'user@localhost') 
     or die "Can't login: ", $ftps->$last_message();
 
   $ftps->cwd("/pub") or die "Can't change directory: ", $ftps->last_message;

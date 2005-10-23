@@ -5,3 +5,4 @@ README
 t/00-basic.t
 t/10-complex.t
 FTPSSL.pm
+META.yml                                 Module meta-data (added by MakeMaker)

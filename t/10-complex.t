@@ -12,9 +12,9 @@ plan tests => 8;
 BEGIN { use_ok('Net::FTPSSL') }
 
 diag( "\nYou can also perform a deeper test." );
-diag( "Some informations will be required for this test, like" );
-diag( "a secure ftp server address, a valid user && password and a directory" );
-diag( "with read, write, rename and delete permissions." );
+diag( "Some informations will be required for this test:" );
+diag( "A secure ftp server address, a user, a password and a directory" );
+diag( "where the user has permissions to read and write." );
 my $more_test = ask_yesno("Do you want to make a deeper test");
 
 SKIP: {
