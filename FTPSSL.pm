@@ -1,7 +1,7 @@
-# File	  : Net::FTPSSL
+# File    : Net::FTPSSL
 # Author  : kral <kral at paranici dot org>
 # Created : 01 March 2005
-# Version : 0.04
+# Version : 0.05
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -15,7 +15,7 @@ use Net::SSLeay::Handle;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.04";
+$VERSION = "0.05";
 @EXPORT  = qw( IMP_CRYPT EXP_CRYPT );
 
 use constant IMP_CRYPT => "I";
@@ -26,25 +26,30 @@ use constant CMD_OK      => 2;
 use constant CMD_MORE    => 3;
 use constant CMD_REJECT  => 4;
 use constant CMD_ERROR   => 5;
+use constant CMD_PROTECT => 6;
 use constant CMD_PENDING => 0;
 use constant MODE_BINARY => "I";
 use constant MODE_ASCII  => "A";
+
+use constant TRACE_MOD => 5;   # How many iterations between ".".  Must be >= 2.
 
 sub new {
   my $self         = shift;
   my $type         = ref($self) || $self;
   my $host         = shift;
   my %arg          = @_;
-  my $port         = $arg{Port} || 'ftp(21)';
+
+  my $encrypt_mode = $arg{Encryption} || EXP_CRYPT;
+  my $port         = $arg{Port} || ($encrypt_mode eq EXP_CRYPT ? 'ftp(21)' : 990);
   my $debug        = $arg{Debug} || 0;
   my $timeout      = $arg{Timeout} || 120;
   my $buf_size     = $arg{Buffer} || 10240;
-  my $encrypt_mode = $arg{Encryption} || EXP_CRYPT;
+  my $trace        = $arg{Trace} || 0;
   my $clear_sock;
 
   croak "Host undefined" unless $host;
 
-  croak "Encryption mode unknow!"
+  croak "Encryption mode unknown!"
     if ( $encrypt_mode ne IMP_CRYPT && $encrypt_mode ne EXP_CRYPT );
 
   # We start with a clear connection, 'cause I don't know if the
@@ -58,6 +63,7 @@ sub new {
     or return undef;
 
   $socket->autoflush(1);
+  ${*$socket}{'debug'} = $debug;
 
   # In explicit mode, FTPSSL send an AUTH SSL command, catch the messages
   # and then transform the clear connection in a crypted one.
@@ -65,9 +71,9 @@ sub new {
   if ( $encrypt_mode eq EXP_CRYPT ) {
     return undef unless ( response($socket) == CMD_OK );
     command( $socket, "AUTH", "TLS" );
-    response($socket);
+    return undef unless ( response($socket) == CMD_OK );
   }
-	
+
   # Turn the clear connection in a SSL one.
   my $obj = $type->start_SSL( $socket, SSL_version => "TLSv1" )
     or croak IO::Socket::SSL::errstr();
@@ -81,7 +87,8 @@ sub new {
   ${*$obj}{'debug'}    = $debug;
   ${*$obj}{'timeout'}  = $timeout;
   ${*$obj}{'buf_size'} = $buf_size;
-  ${*$obj}{'type'}     = 'A';
+  ${*$obj}{'type'}     = MODE_ASCII;
+  ${*$obj}{'trace'}    = $trace;
 
   return $obj;
 }
@@ -129,11 +136,13 @@ sub pasv {
   $self->_protp();
 
   $self->command("PASV");
-  my $msg = $self->getline();
 
-  print "<<< " . $msg if ${*$self}{'debug'};
+  # my $msg = $self->getline();
+  # print STDERR "<<< " . $msg if ${*$self}{'debug'};
+  # unless ( substr( $msg, 0, 1 ) == CMD_OK ) { return 0; }
 
-  unless ( substr( $msg, 0, 1 ) == CMD_OK ) { return 0; }
+  unless ( $self->response () == CMD_OK ) { return 0; }
+  my $msg = $self->last_message ();
 
   $msg =~ m/(\d+)\s(.*)\(((\d+,?)+)\)\.?/
     ;    # [227] [Entering Passive Mode] ([h1,h2,h3,h4,p1,p2]).
@@ -156,19 +165,20 @@ sub pasv {
 sub list {
   my $self = shift;
   my $path = shift;
-  my ( $tmp, $dati, $io, $size );
+  my $dati;
 
   unless ( $self->pasv() ) {
     croak "Can't set passive mode!: " . ${*$self}{'last_ftp_msg'};
   }
 
   if ( $self->_list($path) ) {
+    my ( $tmp, $io, $size );
 
     $size = ${*$self}{'buf_size'};
     $io   = new IO::Handle;
     tie( *$io, "Net::SSLeay::Handle", ${*$self}{'data_ch'} );
 
-	$io->autoflush(1);
+    $io->autoflush(1);
 
     while ( my $len = sysread $io, $tmp, $size ) {
       unless ( defined $len ) {
@@ -177,24 +187,26 @@ sub list {
       }
       $dati .= $tmp;
     }
+
+    $io->close();
   }
 
-  $io->close();
   $self->response;    # For catch "226 Closing data connection."
 
-  return $dati ? split( /\n/, $dati ) : ();
+  return $dati ? split( /\015\012/, $dati ) : ();
 }
 
 sub nlst {
   my $self = shift;
   my $path = shift;
-  my ( $tmp, $dati, $io, $size );
+  my $dati;
 
   unless ( $self->pasv() ) {
     croak "Can't set passive mode!: " . ${*$self}{'last_ftp_msg'};
   }
 
   if ( $self->_nlst($path) ) {
+    my ( $tmp, $io, $size );
 
     $size = ${*$self}{'buf_size'};
 
@@ -210,12 +222,12 @@ sub nlst {
       }
       $dati .= $tmp;
     }
+    $io->close();
   }
 
-  $io->close();
   $self->response;    # For catch "226 Closing data connection."
 
-  return $dati ? split( /\n/, $dati ) : ();
+  return $dati ? split( /\015\012/, $dati ) : ();
 }
 
 sub get {
@@ -240,11 +252,14 @@ sub get {
     }
   }
 
+  # my $fix_cr_issue = ($^O !~ m/MSWin[0-9]+$/);
+  my $fix_cr_issue = 1;
   if ( ${*$self}{'type'} eq MODE_BINARY ) {
     unless ( binmode $localfd ) {
       $self->_abort();
       croak "Can't set binary mode to local file!";
     }
+    $fix_cr_issue = 0;
   }
 
   if ( $self->_retr($file_rem) ) {
@@ -254,14 +269,27 @@ sub get {
 
     $io->autoflush(1);
 
+    print STDERR "get() trace ."  if (${*$self}{'trace'});
+    my $cnt = 0;
+
     while ( ( my $len = sysread $io, $data, $size ) ) {
       unless ( defined $len ) {
         next if $! == EINTR;
         croak "System read error on get(): $!\n";
       }
+
+      if ($fix_cr_issue) {
+         $data =~ s/\015\012/\n/g;
+         $len = length ($data);
+      }
+
+      print STDERR "."  if (${*$self}{'trace'} && ($cnt % TRACE_MOD) == 0);
+      ++$cnt;
+
       $written = syswrite $localfd, $data, $len;
       croak "System write error on get(): $!\n" unless defined $written;
     }
+    print STDERR ". done!\n"  if (${*$self}{'trace'});
 
     $io->close();
     $self->response;    # For catch "226 Closing data connection."
@@ -300,11 +328,13 @@ sub put {
     $file_rem = File::Basename::basename($file_loc);
   }
 
+  my $fix_cr_issue = 1;
   if ( ${*$self}{'type'} eq MODE_BINARY ) {
     unless ( binmode $localfd ) {
       $self->_abort();
       croak "Can't set binary mode to local file!";
     }
+    $fix_cr_issue = 0;
   }
 
   # If alloc_size is already set, I skip this part
@@ -325,19 +355,31 @@ sub put {
 
     $io->autoflush(1);
 
+    print STDERR "put() trace ."  if (${*$self}{'trace'});
+    my $cnt = 0;
+
     while ( ( my $len = sysread $localfd, $data, $size ) ) {
       unless ( defined $len ) {
         next if $! == EINTR;
         croak "System read error on put(): $!\n";
       }
+
+      if ($fix_cr_issue) {
+         $data =~ s/\n/\015\012/g;
+         $len = length ($data);
+      }
+
+      print STDERR "."  if (${*$self}{'trace'} && ($cnt % TRACE_MOD) == 0);
+      ++$cnt;
+
       $written = syswrite $io, $data, $len;
       croak "System write error on put(): $!\n" unless defined $written;
     }
+    print STDERR ". done!\n"  if (${*$self}{'trace'});
 
     $io->close();
     $self->response;    # For catch "226 Closing data connection."
     return 1;
-
   }
 
   return undef;
@@ -358,6 +400,8 @@ sub uput {              # Unique put (STOU command)
 
   if ( ref($file_loc) && ref($file_loc) eq "GLOB" ) {
     $localfd = \*$file_loc;
+    croak "If you had passed a stream, you must specify the remote filename."
+      unless $file_rem;
   }
   else {
     unless ( open( $localfd, "< $file_loc" ) ) {
@@ -366,13 +410,21 @@ sub uput {              # Unique put (STOU command)
     }
   }
 
-  if ( ${*$self}{'type'} eq 'I' ) {
+  unless ($file_rem) {
+     require File::Basename;
+     $file_rem = File::Basename::basename ($file_loc);
+  }
+
+  my $fix_cr_issue = 1;
+  if ( ${*$self}{'type'} eq MODE_BINARY ) {
     unless ( binmode $localfd ) {
       $self->_abort();
       croak "Can't set binary mode to local file!";
     }
+    $fix_cr_issue = 0;
   }
 
+  # If alloc_size is already set, I skip this part
   unless ( defined ${*$self}{'alloc_size'} ) {
     if ( -f $file_loc ) {
       my $size = -s $file_loc;
@@ -390,19 +442,31 @@ sub uput {              # Unique put (STOU command)
 
     $io->autoflush(1);
 
+    print STDERR "uput() trace ."  if (${*$self}{'trace'});
+    my $cnt = 0;
+
     while ( ( my $len = sysread $localfd, $data, $size ) ) {
       unless ( defined $len ) {
         next if $! == EINTR;
-        croak "System read error on put(): $!\n";
+        croak "System read error on uput(): $!\n";
       }
+
+      if ($fix_cr_issue) {
+         $data =~ s/\n/\015\012/g;
+         $len = length ($data);
+      }
+
+      print STDERR "."  if (${*$self}{'trace'} && ($cnt % TRACE_MOD) == 0);
+      ++$cnt;
+
       $written = syswrite $io, $data, $len;
-      croak "System write error on put(): $!\n" unless defined $written;
+      croak "System write error on uput(): $!\n" unless defined $written;
     }
+    print STDERR ". done!\n"  if (${*$self}{'trace'});
 
     $io->close();
     $self->response;    # For catch "226 Closing data connection."
     return 1;
-
   }
 
   return undef;
@@ -483,26 +547,76 @@ sub cdup {
 
 # TODO: Make mkdir() working with recursion.
 sub mkdir {
-	my $self = shift;
-	my $dir = shift;
-	$self->command("MKD", $dir);
-	return ( $self->response == CMD_OK );	
+    my $self = shift;
+    my $dir = shift;
+    $self->command("MKD", $dir);
+    return ( $self->response == CMD_OK );
 }
 
 # TODO: Make rmdir() working with recursion.
 sub rmdir {
-	my $self = shift;
-	my $dir = shift;
-	$self->command("RMD", $dir);
-	return ( $self->response == CMD_OK );	
+    my $self = shift;
+    my $dir = shift;
+    $self->command("RMD", $dir);
+    return ( $self->response == CMD_OK );
 }
 
 sub site {
   my $self = shift;
-  my $args = shift;
 
-  $self->command("SITE", $args);
+  $self->command("SITE", @_);
   return ( $self->response == CMD_OK );
+}
+
+sub supported {
+   my $self = shift;
+   my $cmd = uc (shift);
+   my $site_cmd = shift;
+
+   my $result = 0;        # Assume invalid FTP command
+
+   # It will cache the result so OK to call multiple times.
+   my $help = $self->_help ();
+
+   # Only finds exact matches, no abbreviations like some FTP servers allow.
+   if (defined $cmd && exists $help->{$cmd}) {
+      $result = 1;        # Was a valid FTP command
+   } else {
+      ${*$self}{'last_ftp_msg'} = "502 Unknown command $cmd.";
+   }
+
+   # Are we validating a SITE sub-command?
+   if ($result && $cmd eq "SITE" && defined $site_cmd) {
+      my $help2 = $self->_help ($cmd);
+      if (! exists $help2->{uc ($site_cmd)}) {
+         ${*$self}{'last_ftp_msg'} = "502 Unknown $cmd command - $site_cmd.";
+         $result = 0;     # It failed after all!
+      }
+   }
+
+   return ($result);
+}
+
+# Allow the user to send a command directly, BE CAREFUL !!
+
+sub quot {
+   my $self = shift;
+   my $cmd  = uc (shift);
+
+   unless ($self->supported ($cmd)) {
+      return (CMD_REJECT);
+   }
+
+   # The following FTP commands are known to open a data channel
+   if ($cmd eq "STOR" || $cmd eq "RETR" ||
+       $cmd eq "NLST" || $cmd eq "LIST" ||
+       $cmd eq "STOU" || $cmd eq "APPE") {
+      ${*$self}{'last_ftp_msg'} = "522 Data Connections not supported via quot().";
+      return (CMD_REJECT);
+   }
+
+   $self->command ($cmd, @_);
+   return ($self->response ());
 }
 
 #-----------------------------------------------------------------------
@@ -512,13 +626,13 @@ sub site {
 sub ascii {
   my $self = shift;
   ${*$self}{'type'} = MODE_ASCII;
-  return $self->_type('A');
+  return $self->_type(MODE_ASCII);
 }
 
 sub binary {
   my $self = shift;
   ${*$self}{'type'} = MODE_BINARY;
-  return $self->_type('I');
+  return $self->_type(MODE_BINARY);
 }
 
 #-----------------------------------------------------------------------
@@ -616,6 +730,68 @@ sub _rnto {
 }
 
 #-----------------------------------------------------------------------
+#  Checks what commands are available on the remote server
+#-----------------------------------------------------------------------
+
+sub _help {
+   # Only sift off self, bug otherwise!
+   my $self = shift;
+
+   # Check if requesting a list of all commands or details on specific command.
+   my $all_cmds = (! defined $_[0]);
+   my $site_cmd = (defined $_[0] && uc ($_[0]) eq "SITE");
+
+   # Now see if we've cached the result previously ...
+   if ($all_cmds && exists ${*$self}{'help_cmds_found'}) {
+      ${*$self}{'last_ftp_msg'} = ${*$self}{'help_cmds_text'};
+      return ( ${*$self}{'help_cmds_found'} );
+   } elsif ($site_cmd && exists ${*$self}{'help_site_found'}) {
+      ${*$self}{'last_ftp_msg'} = ${*$self}{'help_site_text'};
+      return ( ${*$self}{'help_site_found'} );
+   }
+
+   $self->command ("HELP", @_);
+
+   my %help;
+
+   # Now lets see if we need to parse the result to get a hash of the
+   # supported FTP commands on the other server ...
+   if ($self->response () == CMD_OK && ($all_cmds || $site_cmd)) {
+      my $helpmsg = $self->last_message ();
+      my @lines = split (/\n/, $helpmsg);
+
+      foreach my $line (@lines) {
+         $line =~ s/^[0-9]+[\s-]//;          # Strip off the code & separator
+
+         my @lst = split (/[\s,]+/, $line);  # Break up into individual commands
+
+         # Now only process if 1st keyword is all in upper case.
+         # Otherwise it's a comment, not a supported FTP command.
+         # Commands ending in "*" are currently turned off.
+         if ($lst[0] =~ m/^[A-Z]+[*]?$/) {
+            foreach (@lst) {
+               $help{$_} = 1   if ($_ !~ m/[*]$/);
+            }
+         }
+      }
+
+      if (scalar (keys %help) > 0) {
+         if ($all_cmds) {
+            # Add the assumed OPTS command required if FEAT is supported!
+            $help{"OPTS"} = 1  if ($help{"FEAT"});     # RFC 2389
+            ${*$self}{'help_cmds_found'} = \%help;
+            ${*$self}{'help_cmds_text'} = $helpmsg;
+         } else {
+            ${*$self}{'help_site_found'} = \%help;
+            ${*$self}{'help_site_text'} = $helpmsg;
+         }
+      }
+   }
+
+   return (\%help);
+}
+
+#-----------------------------------------------------------------------
 #  Messages handler
 #-----------------------------------------------------------------------
 
@@ -626,6 +802,7 @@ sub command {
 
   @args = grep defined($_), @_
     ; # remove undef values from the list. Maybe I have to find out why those undef were passed.
+
   $data = join(
     " ",
     map {
@@ -637,8 +814,14 @@ sub command {
 
   $data .= "\015\012";
 
-  print STDERR ">>> " . $data
-    if ref($self) eq "Net::FTPSSL" && ${*$self}{'debug'};
+  if ( ${*$self}{'debug'} ) {
+     my $prefix = ( ref($self) eq "Net::FTPSSL" ) ? ">>> " : "SKT >>> ";
+     if ( $data =~ m/^PASS\s/ ) {
+        print STDERR $prefix . "PASS *******\n";   # Don't echo passwords
+     } else {
+        print STDERR $prefix . $data;              # Echo everything else
+     }
+  }
 
   my $written;
   my $len = length $data;
@@ -650,45 +833,63 @@ sub command {
   }
 
   return 1;
-
 }
 
+# Some responses take multiple lines to finish.  So be careful, you will
+# be blocked if you read past the last row of the response!
 sub response {
   my $self = shift;
-  my ( $data, $code );
+  my ( $data, $code, $sep, $desc ) = ( "", CMD_ERROR, "-", "" );
 
-	my $read = sysread( $self, $data, 4096);
-	unless( defined $read ) {
-		croak "Can't read on socket: $!";
-	}
+  ${*$self}{'last_ftp_msg'} = "";   # Clear out the old message
+  my $prefix = ( ref($self) eq "Net::FTPSSL" ) ? "<<< " : "SKT <<< ";
 
-	my @lines = split( "\015\012", $data );
-		
-  foreach my $line ( @lines ) {
+  while ($sep eq "-") {
+     my $read = sysread( $self, $data, 4096);
+     unless( defined $read ) {
+         croak "Can't read on socket: $!";
+     }
 
-# 	$data = $self->getline();	
-#   $data =~ m/^(\d+)(\-?)(.*)$/s;
-    $line =~ m/^(\d+)(\-?)(.*)$/s;
+     # The above sysread() should only read in a single response msg.
+     # But multiple response messages per sysread() is no problem.
+     # But some responses have embedded CR, so no codes appear on those lines!
+     my @lines = split( "\015\012", $data );
 
-    $code = $1;
-    print STDERR "<<< " . $line ."\n"
-      if ref($self) eq "Net::FTPSSL" && ${*$self}{'debug'};
+     foreach my $line ( @lines ) {
 
-    if ( ref($self) eq "Net::FTPSSL" ) {
-      ${*$self}{'last_ftp_msg'} = $line;
-    }
+       print STDERR $prefix . $line . "\n"   if ${*$self}{'debug'};
 
-    last if $2 ne '-';
+#      $data = $self->getline();
+#      $data =~ m/^(\d+)(\-?)(.*)$/s;
+       $line =~ m/^(\d+)([-\s]?)(.*)$/s;
 
+       ($code, $sep, $desc) = ($1, $2, $3);
+
+       ${*$self}{'last_ftp_msg'} .= $line;
+
+       last if (defined $sep && $sep ne '-');
+
+       ${*$self}{'last_ftp_msg'} .= "\n";
+     }
+
+     # Only true if the last response message had CR's embeded in it!
+     $sep = "-" unless (defined $sep);
   }
 
   return substr( $code, 0, 1 );
-
 }
 
 sub last_message {
   my $self = shift;
   return ${*$self}{'last_ftp_msg'};
+}
+
+#-----------------------------------------------------------------------
+#  Added to make backwards compatable with Net::FTP
+#-----------------------------------------------------------------------
+sub message {
+   my $self = shift;
+   $self->last_message (@_);
 }
 
 1;
@@ -699,7 +900,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.04
+=head1 VERSION 0.05
 
 =head1 SYNOPSIS
 
@@ -719,7 +920,7 @@ Net::FTPSSL - A FTP over SSL/TLS class
   $ftps->get("file") or die "Can't get file: ", $ftps->last_message;
 
   $ftps->quit();
-	
+
 =head1 DESCRIPTION
 
 C<Net::FTPSSL> is a class implementing a simple FTP client over a Secure
@@ -740,7 +941,7 @@ pairs.
 C<OPTIONS> are:
 
 B<Port> - The port number to connect to on the remote FTP server.
-Default value is 21.
+Default value is 21 for B<EXP_CRYPT> or 990 for B<IMP_CRYPT>.
 
 B<Encryption> - The connection can be implicitly (B<IMP_CRYPT>) or
 explicitly (B<EXP_CRYPT>) encrypted.
@@ -754,11 +955,13 @@ made. Default value is 10240.
 
 B<Debug> - This set the debug informations option on/off. Default is off.
 
+B<Trace> - Turns on/off put/get download tracing to STDERR.  Default is off.
+
 =back
 
 =head1 METHODS
 
-All the methods return I<true> or I<false>, true when the operation was
+Most of the methods return I<true> or I<false>, true when the operation was
 a succes and false when failed. Methods like B<list> or B<nlst> return an
 empty array when fail.
 
@@ -803,7 +1006,7 @@ Sets the transfer file in binary mode. No transformation will be done.
 =item get(REMOTE_FILE, LOCAL_FILE)
 
 Retrives the REMOTE_FILE from the ftp server. LOCAL_FILE may be a filename or a
-filehandle.	Return undef if it fails.
+filehandle.  Return undef if it fails.
 
 =item put(LOCAL_FILE, [REMOTE_FILE])
 
@@ -838,11 +1041,36 @@ Removes the empty indicated directory. No recursion at the moment.
 
 It specifies no action other than the server send an OK reply.
 
+=item site(ARGS)
+
+Send a SITE command to the remote server and wait for a response.
+
+=item supported(CMD [,SITE_OPT])
+
+Returns TRUE if the remote server supports the given command.  CMD must match
+exactly.  If the CMD is SITE and SITE_OPT is supplied, it will also check if
+the specified SITE_OPT sub-command is supported.
+
+=item quot(CMD [,ARGS])
+
+Send a command, that Net::FTPSSL does not directly support, to the remote
+server and wait for a response.
+
+Returns the most significant digit of the response code.
+
+B<WARNING> This call should only be used on commands that do not require
+data connections.  Misuse of this method can hang the connection if the
+internal list of FTP commands using a data channel is incomplete.
+
 =back
 
 =head1 AUTHOR
 
 Marco Dalla Stella - <kral at paranoici dot org>
+
+=head1 MAINTAINER
+
+Curtis Leach - As of v0.05
 
 =head1 SEE ALSO
 
@@ -854,7 +1082,11 @@ L<Net::SSLeay::Handle>
 
 L<IO::Socket::SSL>
 
+RFC 959 - L<ftp://ftp.rfc-editor.org/in-notes/rfc959.txt>
+
 RFC 2228 - L<ftp://ftp.rfc-editor.org/in-notes/rfc2228.txt>
+
+RFC 4217 - L<ftp://ftp.rfc-editor.org/in-notes/rfc4217.txt>
 
 =head1 CREDITS
 
@@ -875,3 +1107,4 @@ program is free software; you can redistribute it and/or modify it under
 the same terms as Perl itself.
 
 =cut
+

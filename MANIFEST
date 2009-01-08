@@ -4,5 +4,6 @@ MANIFEST
 README
 t/00-basic.t
 t/10-complex.t
+t/test_file.tar.gz
 FTPSSL.pm
 META.yml                                 Module meta-data (added by MakeMaker)

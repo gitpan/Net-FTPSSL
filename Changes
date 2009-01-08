@@ -1,14 +1,24 @@
 Revision history for Perl extension Net::FTPSSL.
 
+0.05 05/01/2009 08:30:00
+  - Fixed resonse() to properly get the entire response instead of just the 1st line of it.
+    This change fixes many of the reported bugs reported against this module.
+  - Fixed command() & response() to also log socket() calls in debug mode with "SKT >>>" & "SKT <<<" prefixes.
+  - Added supported(), quot(), & _help()
+  - All response calls in new() are now tested & added debug flag to socket object.
+  - Enhanced t/10-complex.t
+  - Other minor fixes.
+  - Bugs Fixed: 41665, 31720, 16751, 30359, 24136, 17537, 17538, 34818
+
 0.04 23/11/2005 11:58:34
   - Corrected some typos on the documentation.
 
 0.03 05/09/2005 15.01.52 
-	- cdup(), mkdir() and rmdir() added
-	- A better sysread() and syswrite() use on list(), nlst(), get(), put() and uput() methods
-	- Added autoflush on list(), nlst(), get(), put() and uput() methods
-	- A better interactive test, (the previous one sucked, this one is a little better! ^_^)
-	- Other minor fixes
+  - cdup(), mkdir() and rmdir() added
+  - A better sysread() and syswrite() use on list(), nlst(), get(), put() and uput() methods
+  - Added autoflush on list(), nlst(), get(), put() and uput() methods
+  - A better interactive test, (the previous one sucked, this one is a little better! ^_^)
+  - Other minor fixes
 
 0.02 01/08/2005 22:12:34
   - Change the returning data of list() and nlst()
@@ -17,5 +27,5 @@ Revision history for Perl extension Net::FTPSSL.
   - Makefile no longer require Perl 5.8.4
 
 0.01 21/05/2005 20:55:58
-	- original version; created by h2xs 1.23 with options -AX Net::FTPSSL
+  - original version; created by h2xs 1.23 with options -AX Net::FTPSSL
 

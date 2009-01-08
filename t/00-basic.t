@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 
-use Test::More;
-plan tests => 1;
+use Test::More tests => 2;
+# plan tests => 1;
 
 BEGIN { use_ok('Net::FTPSSL') }
 

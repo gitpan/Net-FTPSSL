@@ -5,11 +5,18 @@
 
 # change 'tests => 1' to 'tests => last_test_to_print';
 use strict;
-use Test::More;
 
-plan tests => 8;
+use Test::More tests => 22;
 
-BEGIN { use_ok('Net::FTPSSL') }
+# plan tests => 21;  # Can't use due to BEGIN block
+
+BEGIN { use_ok('Net::FTPSSL') }    # Test # 1
+
+# Delete test files from previous run
+unlink ("./t/test_file_new.tar.gz",
+        "./t/FTPSSL.pm_new.tst",
+        "./t/test_list_results_new.txt",
+        "./t/test_trace_log_new.txt");
 
 diag( "\nYou can also perform a deeper test." );
 diag( "Some informations will be required for this test:" );
@@ -18,44 +25,116 @@ diag( "where the user has permissions to read and write." );
 my $more_test = ask_yesno("Do you want to make a deeper test");
 
 SKIP: {
-	skip "Deeper test skipped for some reason...", 8 unless $more_test;
+    skip "Deeper test skipped for some reason...", 21 unless $more_test;
 
-	my( $address, $server, $port, $user, $pass, $mode, $dir ); 
+    my( $address, $server, $port, $user, $pass, $mode, $dir ); 
 
-	$address = ask("Server address ( host[:port] )");
+    $address = ask("Server address ( host[:port] )");
 
-	$mode = ask("\tConnection mode (I)mplicit or (E)xplicit. (default 'E')");
+    $mode = uc (ask("\tConnection mode (I)mplicit or (E)xplicit. (default 'E')"));
 
-	$user = ask("\tUser (default 'anonymous')");
+    $user = ask("\tUser (default 'anonymous')");
 
-	$pass = ask("\tPassword (default 'user\@localhost')");
-	
-	$dir = ask("\tDirectory (default \/)");
+    $pass = ask("\tPassword (default 'user\@localhost')");
 
-	( $server, $port ) = split( /:/, $address );
-	$port = 21 unless $port;
-	$mode = EXP_CRYPT unless $mode =~ /(I|E)/;
-	$user = 'anonymous' unless $user;
-	$pass = 'user@localhost' unless $pass;
+    $dir = ask("\tDirectory (default \/)");
 
-  my $ftp =
-    Net::FTPSSL->new( $server, Port => $port, Encryption => $mode )
-    or die "Can't open $server:$port";
+    ( $server, $port ) = split( /:/, $address );
+    $port = 21 unless $port;
+    $mode = EXP_CRYPT unless $mode =~ /^(I|E)$/;
+    $user = 'anonymous' unless $user;
+    $pass = 'user@localhost' unless $pass;
 
-  isa_ok( $ftp, 'Net::FTPSSL', 'Net::FTP object creation' );
+    # So we can save the Debug trace in a file from this test.
+    open (OLDERR, ">&STDERR");
+    open (STDERR, "> ./t/test_trace_log_new.txt");
 
-  ok( $ftp->login( $user, $pass ), 'Login' );
+    my $ftp =
+      Net::FTPSSL->new( $server, Port => $port, Encryption => $mode, Debug => 1, Trace => 1 )
+          or die "Can't open $server:$port";
 
-	ok( $ftp->cwd( $dir ), "Changed the dir to $dir" );
+    isa_ok( $ftp, 'Net::FTPSSL', 'Net::FTPSSL object creation' );
 
-  ok( scalar $ftp->list() != 0, 'list() command' );
+    ok( $ftp->login( $user, $pass ), "Login to $server" );
 
-	ok( $ftp->put( './t/test_file.tar.gz' ), 'puting a test file on $dir' );
-	ok( $ftp->rename('test_file.tar.gz', 'test_file_new.tar.gz'), 'renaming it' );
-	ok( $ftp->get('test_file_new.tar.gz', './t/test_file_new.tar.gz'), 'getting the renamed file' );
-	ok( $ftp->delete('test_file_new.tar.gz'), 'deleting the test file' );
+    ok( $ftp->cwd( $dir ), "Changed the dir to $dir" );
+    my $pwd = $ftp->pwd();
+    ok( defined $pwd, "Getting the directory: ($pwd)" );
 
-  $ftp->quit();
+    my $res = $ftp->cdup ();
+    my $pwd = $ftp->pwd();
+    ok ( $res, "Going up one level: ($pwd)" );
+
+    my $res = $ftp->cwd ( $dir );
+    my $pwd = $ftp->pwd();
+    ok ( $res, "Returning to proper dir: ($pwd)" );
+
+    ok( $ftp->supported("HELP"), "Checking if HELP is supported" );
+    ok( ! $ftp->supported("BADCMD"), "Verifying BADCMD isn't supported" );
+
+    ok( $ftp->noop(), "Noop test" );
+
+    ok( $ftp->put( './FTPSSL.pm' ), "puting a test ascii file on $dir" );
+
+    if ($ftp->supported ("STOU")) {
+       ok( $ftp->uput( './FTPSSL.pm' ), "uput the same test ascii file again" );
+    } else {
+       ok( ! $ftp->uput( './FTPSSL.pm' ), "uput should fail since STOU not supported on this server" );
+    }
+
+    ok( $ftp->binary (), 'putting FTP in binry mode' );
+    ok( $ftp->put( './t/test_file.tar.gz' ), "puting a test binary file on $dir" );
+
+    # Put after put() call so there is something to find!
+    # (Otherwise it looks like it failed.)
+    my @lst = $ftp->list ();
+    ok( scalar @lst != 0, 'list() command' );
+
+    # -----------------------------------
+    # Check if the rename fails, since that will affect the remaining tests ...
+    # Possible reasons: Command not supported or your account doesn't have
+    # permission to do the rename!
+    # -----------------------------------
+    $res = $ftp->rename ('test_file.tar.gz', 'test_file_new.tar.gz');
+    my $msg = $ftp->last_message();      # If it failed, find out why ...
+    if ($ftp->supported ("RNFR") && $ftp->supported ("RNTO")) {
+       if ($res) {
+          ok( $res, 'renaming bin file works' );
+       } else {
+          ok( ($msg =~ m/Permission denied/) || ($msg =~ m/^550 /),
+              "renaming bin file check: ($msg)" );
+       }
+    } else {
+       ok( ! $res, "Rename is not supported on this server" );
+    }
+    my $file = $res ? "test_file_new.tar.gz" : "test_file.tar.gz";
+
+    my @lst2 = $ftp->nlst ();
+    ok( scalar @lst2 != 0, 'nlst() command' );
+
+    ok( $ftp->get($file, './t/test_file_new.tar.gz'), 'retrieving the binary file' );
+    ok( $ftp->delete($file), "deleting the test bin file on $server" );
+
+    ok( $ftp->ascii (), 'putting FTP back in ascii mode' );
+    ok( $ftp->get("FTPSSL.pm", './t/FTPSSL.pm_new.tst'), 'retrieving the ascii file again' );
+    ok( $ftp->delete("FTPSSL.pm"), "deleting the test file on $server" );
+    # -----------------------------------
+
+    $ftp->quit();
+
+    # Restore STDERR now that the tests are done!
+    open (STDERR, ">&OLDERR");
+    if (1 == 2) {
+       print OLDERR "\n";   # Perl gives warning if not present!
+    }
+
+    # Save the results from the list() & nlst() calls.
+    open (TMP, "> ./t/test_list_results_new.txt");
+    print TMP "Dir: ($pwd)\n";
+    foreach (@lst, @lst2) {
+       print TMP "($_)\n";
+    }
+    close (TMP);
 }
 
 sub ask {
@@ -78,3 +157,4 @@ sub ask_yesno {
 }
 
 # vim:ft=perl:
+
