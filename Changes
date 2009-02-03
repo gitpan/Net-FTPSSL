@@ -1,6 +1,17 @@
 Revision history for Perl extension Net::FTPSSL.
 
-0.05 05/01/2009 08:30:00
+Version - YYYY/MM/DD
+--------------------
+
+0.06 2009/02/03 08:30:00
+  - Added new() DataProtLevel option to allow selecting the Data Channel Protection.
+  - Fixed _help() so supported() works for some new servers.
+  - new() now allows you to select SSL over TLS for connections via useSSL.
+  - Fixed get() bug that sometimes added an extra \015 to ASCII files downloaded.
+    Introduced when Bug 17537 was fixed.
+  - Enhanced t/10-complex.t
+
+0.05 2009/01/05 08:30:00
   - Fixed resonse() to properly get the entire response instead of just the 1st line of it.
     This change fixes many of the reported bugs reported against this module.
   - Fixed command() & response() to also log socket() calls in debug mode with "SKT >>>" & "SKT <<<" prefixes.
@@ -9,6 +20,9 @@ Revision history for Perl extension Net::FTPSSL.
   - Enhanced t/10-complex.t
   - Other minor fixes.
   - Bugs Fixed: 41665, 31720, 16751, 30359, 24136, 17537, 17538, 34818
+
+Version - DD/MM/YYYY
+--------------------
 
 0.04 23/11/2005 11:58:34
   - Corrected some typos on the documentation.

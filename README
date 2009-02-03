@@ -1,4 +1,4 @@
-Net-FTPSSL version 0.05
+Net-FTPSSL version 0.06
 =======================
 
 Net::FTPSSL is an object oriented Perl module which implements a simple
@@ -20,7 +20,6 @@ If you perform the "deeper test", it will generate a few log files to
 help with troubleshooting whats going on.  Debug is turned on for
 this test and written to a log file.  The generated files are:
    ./t/test_trace_log_new.txt    - The FTPSSL Debug log logging all FTP actions
-   ./t/test_list_results_new.txt - What list() & nlst() found
    ./t/FTPSSL.pm_new.txt         - Test ascii file downloaded
    ./t/test_file_new.tar.gz      - Test binary file downloaded.
 
