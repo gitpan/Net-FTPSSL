@@ -3,12 +3,11 @@
 
 #########################
 
-# change 'tests => 1' to 'tests => last_test_to_print';
 use strict;
 
-use Test::More tests => 30;
+use Test::More tests => 33;
 
-# plan tests => 29;  # Can't use due to BEGIN block
+# plan tests => 32;  # Can't use due to BEGIN block
 
 BEGIN { use_ok('Net::FTPSSL') }    # Test # 1
 
@@ -17,15 +16,16 @@ unlink ("./t/test_file_new.tar.gz",
         "./t/FTPSSL.pm_new.tst",
         "./t/test_trace_log_new.txt");
 
-sleep (1);
+sleep (1);  # So test 1 completes before the message prints!
+
 diag( "\nYou can also perform a deeper test." );
-diag( "Some informations will be required for this test:" );
+diag( "Some information will be required for this test:" );
 diag( "A secure ftp server address, a user, a password and a directory" );
 diag( "where the user has permissions to read and write." );
 my $more_test = ask_yesno("Do you want to make a deeper test");
 
 SKIP: {
-    skip "Deeper test skipped for some reason...", 29 unless $more_test;
+    skip "Deeper test skipped for some reason...", 32 unless $more_test;
 
     my( $address, $server, $port, $user, $pass, $dir, $mode, $data, $encrypt_mode ); 
 
@@ -46,35 +46,40 @@ SKIP: {
     ( $server, $port ) = split( /:/, $address );
     $port = 21 unless $port;
     $mode = EXP_CRYPT unless $mode =~ /^(I|E)$/;
-    $data = "P" unless $data =~ /^(C|S|E|P)$/;    # Allow all 4, prompts only 2.
+    $data = DATA_PROT_PRIVATE unless $data =~ /^(C|S|E|P)$/;
     $user = 'anonymous' unless $user;
     $pass = 'user@localhost' unless $pass;
     $encrypt_mode = ($encrypt_mode eq "S") ? 1 : 0;
+
+    # -----------------------------------------------------------
+    # End of user interaction ...
+    # -----------------------------------------------------------
+
+    my %callback_hash;
 
     # So we can save the Debug trace in a file from this test.
     open (OLDERR, ">&STDERR");
     open (STDERR, "> ./t/test_trace_log_new.txt");
 
-    my $ftp =
-      Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
-                                 DataProtLevel => $data,
-                                 useSSL => $encrypt_mode,
-                                 Debug => 1, Trace => 1 )
-          or die "Can't open $server:$port";
+    my $ftp = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
+                                DataProtLevel => $data,
+                                useSSL => $encrypt_mode,
+                                Debug => 1, Trace => 1, Croak => 1 );
 
     isa_ok( $ftp, 'Net::FTPSSL', 'Net::FTPSSL object creation' );
 
-    my $res = $ftp->login ($user, $pass);
-    ok( $res, "Login to $server" );
-    die "Can't log in to $server:$port\n"  unless $res;
+    ok( $ftp->login ($user, $pass), "Login to $server" );
 
-    $dir = $ftp->pwd ()  unless $dir;   # Use HOME dir if not provided!
+    $dir = $ftp->pwd ()  unless $dir;   # Ask for HOME dir if not provided!
 
     ok( $ftp->cwd( $dir ), "Changed the dir to $dir" );
     my $pwd = $ftp->pwd();
     ok( defined $pwd, "Getting the directory: ($pwd)" );
 
-    $res = $ftp->cdup ();
+    # Turning off croak now that our environment is correct!
+    $ftp->set_croak (0);
+
+    my $res = $ftp->cdup ();
     $pwd = $ftp->pwd();
     ok ( $res, "Going up one level: ($pwd)" );
 
@@ -84,11 +89,14 @@ SKIP: {
 
     # Verifying supported() & _help() work as expected.
     # Must check logs for _help() success, since returns a hash reference.
+
     ok( $ftp->supported("HELP"), "Checking if HELP is supported" );
     ok( $ftp->_help("HELP"), "Getting the HELP usage" );  # Never fails
     print STDERR "--- " . $ftp->last_message() . " ---\n";
+
     ok( $ftp->_help("HELP"), "Getting the HELP usage again (cached?)" );
     print STDERR "--- " . $ftp->last_message() . " -- (cached?) --\n";
+
     ok( $ftp->supported("HELP"), "Checking HELP supported again (cached?)" );
     ok( ! $ftp->supported("BADCMD"), "Verifying BADCMD isn't supported" );
     ok( ! $ftp->supported("SITE", "BADCMD"), "Verifying SITE BADCMD isn't supported" );
@@ -105,16 +113,26 @@ SKIP: {
 
     ok( $ftp->noop(), "Noop test" );
 
-    # -----------------------------------------
-    # Start put/get/rename/delete section ...
-    # -----------------------------------------
+    # -----------------------------------------------
+    # Start put/uput/get/rename/delete section ...
+    # -----------------------------------------------
 
     ok( $ftp->put( './FTPSSL.pm' ), "puting a test ascii file on $dir" );
 
-    if ($ftp->supported ("STOU")) {
-       ok( $ftp->uput( './FTPSSL.pm' ), "uput the same test ascii file again" );
+    # So the supported test will appear in the log file 1st!
+    $res = $ftp->supported ("STOU");
+    my $uput_name = $ftp->uput ( './FTPSSL.pm' );
+
+    if ($res) {
+       ok( $uput_name, "uput the same test ascii file again as: $uput_name" );
+       if ( $uput_name ne "FTPSSL.pm" ) {
+          ok( $ftp->delete($uput_name), "deleting $uput_name on $server" );
+       } else {
+          ok( 0, "Did we correctly detect new uput name used? ($uput_name)" );
+       }
     } else {
-       ok( ! $ftp->uput( './FTPSSL.pm' ), "uput should fail since STOU not supported on this server" );
+       ok( ! $uput_name, "uput should fail since STOU not supported on this server" );
+       ok ( 1, "uput delete skiped since uput not supported!" );
     }
 
     ok( $ftp->binary (), 'putting FTP in binry mode' );
@@ -125,6 +143,12 @@ SKIP: {
     my @lst = $ftp->list ();
     ok( scalar @lst != 0, 'list() command' );
     print_result (\@lst);
+
+    $ftp->set_callback (\&callback_func, \&end_callback_func, \%callback_hash);
+    @lst = $ftp->list ();
+    ok( scalar @lst != 0, 'list() command with callback' );
+    print_result (\@lst);
+    $ftp->set_callback ();   # Disable callbacks again
 
     # -----------------------------------
     # Check if the rename fails, since that will affect the remaining tests ...
@@ -146,6 +170,14 @@ SKIP: {
 
     my $file = $res ? "test_file_new.tar.gz" : "test_file.tar.gz";
 
+    # With call back
+    $ftp->set_callback (\&callback_func, \&end_callback_func, \%callback_hash);
+    @lst = $ftp->nlst ();
+    ok( scalar @lst != 0, 'nlst() command with callback' );
+    print_result (\@lst);
+    $ftp->set_callback ();   # Disable callbacks again
+
+    # Without call back
     @lst = $ftp->nlst ();
     ok( scalar @lst != 0, 'nlst() command' );
     print_result (\@lst);
@@ -214,12 +246,74 @@ sub print_result {
    foreach (@{$lst}) {
       if ($cnt <= 0) {
          print STDERR "...\n";
+         print STDERR "($lst->[-1])\n";
          last;
       }
       print STDERR "($_)\n";
       --$cnt;
    }
    print STDERR "-----------------------------------------------\n";
+}
+
+# Testing out the call back functionality of v0.07.
+sub callback_func {
+   my $ftps_function_name = shift;
+   my $data_ref     = shift;      # The data to/from the data channel.
+   my $data_len_ref = shift;      # The size of the data buffer.
+   my $total_len    = shift;      # The number of bytes to date.
+   my $callback_data_ref = shift; # The callback work space.
+
+   if ( $ftps_function_name =~ m/:list$/ ) {
+      ${$data_ref} =~ s/[a-z]/\U$&/g;    # Convert to upper case!
+      # Format #'s Ex: 1234567 into 1,234,567.
+      while ( ${$data_ref} =~ s/(\d)(\d{3}\D)/$1,$2/ ) { }
+      ${$data_len_ref} = length (${$data_ref});  # Changed length of data!
+
+   } elsif ( $ftps_function_name =~ m/:nlst$/ ) {
+      ${$data_ref} =~ s/[a-z]/\U$&/g;    # Convert to upper case!
+      ${$data_ref} =~ s/^/[0]: /gm;      # Add a prefix per line.
+
+      # Make the prefix unique per line ...
+      my $cnt = ++$callback_data_ref->{counter};
+      while ( ${$data_ref} =~ s/\[0\]/[$cnt]/) {
+         $cnt = ++$callback_data_ref->{counter};
+      }
+
+      # Fix so counter is correct for next time called!
+      --$callback_data_ref->{counter};
+
+      ${$data_len_ref} = length (${$data_ref});  # Changed length of data!
+
+   } else {
+      print STDERR " *** Unexpected callback for $ftps_function_name! ***\n";
+   }
+
+   return ();
+}
+
+# Testing out the end call back functionality of v0.07.
+sub end_callback_func {
+   my $ftps_function_name = shift;
+   my $total_len          = shift;  # The total number of bytes sent out
+   my $callback_data_ref = shift;   # The callback work space.
+
+   my $tail;   # Additional data channel data to provide ...
+
+   if ( $ftps_function_name =~ m/:nlst$/ ) {
+      my $cnt;
+      my $sep = "";
+      $tail = "";
+      foreach ("Junker", "T-Bird", "Coup", "Model-T", "Horse & Buggy") {
+         $cnt = ++$callback_data_ref->{counter};
+         $tail .= $sep . "[$cnt]: $_!";
+         $sep = "\n";
+      }
+
+      # So the next nlst call will start counting all over again!
+      delete ($callback_data_ref->{counter});
+   }
+
+   return ( $tail );
 }
 
 # vim:ft=perl:

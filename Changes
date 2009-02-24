@@ -3,6 +3,30 @@ Revision history for Perl extension Net::FTPSSL.
 Version - YYYY/MM/DD
 --------------------
 
+0.07 2009/02/24 08:30:00
+  - Corrected some typos in the documentation.
+  - Implemented call back functionality for all data channel functions.
+  - Fixed uput() to return the file name used on success instead of just
+    true/false.   Will still return "undef" on failure.  Needed in order to
+    figure out what the other server actually called the file we sent it.
+  - Exposed the DataProtLevel constants for public use.
+  - Now uses caller() extensively to combine multiple similar functions together
+    and for callback support.
+  - Another fix to the get() bug introduced by the Bug 17537 fix.  The previous
+    attempt in v0.06 didn't fully fix the problem!  So took different approach.
+  - Enhanced t/10-complex.t & t/00-basic.t
+
+  The following changes may break some existing code ...
+  - Added new option 'Croak' to cause all failures to call croak() instead of
+    returning undef.  This caused some minor incompatabilities on error handling
+    if your code depended on some old croak() calls.  But the new code is now
+    consistant in error handling in either always returning failure or always
+    calling croak!  It no longer does a combination of both.
+  - Added set_croak() to help mitigate above issue, by being able to turn the
+    croak feature on & off.  t/10-complex.t uses this logic while initializing
+    the connection.
+  - user() & password() have been renamed since internal functions.
+
 0.06 2009/02/03 08:30:00
   - Added new() DataProtLevel option to allow selecting the Data Channel Protection.
   - Fixed _help() so supported() works for some new servers.
@@ -21,8 +45,9 @@ Version - YYYY/MM/DD
   - Other minor fixes.
   - Bugs Fixed: 41665, 31720, 16751, 30359, 24136, 17537, 17538, 34818
 
-Version - DD/MM/YYYY
---------------------
+
+Version - DD/MM/YYYY -- The Marco Dalla Stella releases.
+---------------------------------------------------------
 
 0.04 23/11/2005 11:58:34
   - Corrected some typos on the documentation.
