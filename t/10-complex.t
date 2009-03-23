@@ -3,18 +3,17 @@
 
 #########################
 
+# Goal here is to give as many success messagse as possible.
+# Especially when not all FTP servers support all functions.
+# So the logic here can be a bit convoluted.
+
 use strict;
 
-use Test::More tests => 33;
+use Test::More tests => 41;
 
-# plan tests => 32;  # Can't use due to BEGIN block
+# plan tests => 40;  # Can't use due to BEGIN block
 
 BEGIN { use_ok('Net::FTPSSL') }    # Test # 1
-
-# Delete test files from previous run
-unlink ("./t/test_file_new.tar.gz",
-        "./t/FTPSSL.pm_new.tst",
-        "./t/test_trace_log_new.txt");
 
 sleep (1);  # So test 1 completes before the message prints!
 
@@ -25,7 +24,7 @@ diag( "where the user has permissions to read and write." );
 my $more_test = ask_yesno("Do you want to make a deeper test");
 
 SKIP: {
-    skip "Deeper test skipped for some reason...", 32 unless $more_test;
+    skip "Deeper test skipped for some reason...", 40 unless $more_test;
 
     my( $address, $server, $port, $user, $pass, $dir, $mode, $data, $encrypt_mode ); 
 
@@ -37,33 +36,67 @@ SKIP: {
 
     $dir = ask("\tDirectory (default <HOME>)");
 
-    $mode = uc (ask("\tConnection mode (I)mplicit or (E)xplicit. (default 'E')"));
+    $mode = uc (ask("\tConnection mode (I)mplicit, (E)xplicit, or (C)lear. (default 'E')"));
 
-    $data = uc (ask("\tData Connection mode (C)lear or (P)rotected. (default 'P')"));
+    if ( $mode eq CLR_CRYPT ) {
+       $data = $encrypt_mode = "";   # Make sure not undef ...
+    } else {
+       $data = uc (ask("\tData Connection mode (C)lear or (P)rotected. (default 'P')"));
 
-    $encrypt_mode = uc (ask("\tUse (T)LS or (S)SL encryption (Default 'T')"));
+       $encrypt_mode = uc (ask("\tUse (T)LS or (S)SL encryption (Default 'T')"));
+    }
 
     ( $server, $port ) = split( /:/, $address );
-    $port = 21 unless $port;
-    $mode = EXP_CRYPT unless $mode =~ /^(I|E)$/;
-    $data = DATA_PROT_PRIVATE unless $data =~ /^(C|S|E|P)$/;
+
+    # INET didn't support despite comments elsewhere.
+    # my @svrs = split (/,\s*/, $server);
+    # if (scalar (@svrs) > 1) { $server = \@svrs; }   # Requested list of servers
+
+    # $port = 21 unless $port;   # Let FTPSSL provide the default port.
+    $mode = EXP_CRYPT unless $mode =~ /^(I|E|C|)$/;
+    $data = DATA_PROT_PRIVATE unless $data =~ /^(C|S|E|P|)$/;
     $user = 'anonymous' unless $user;
     $pass = 'user@localhost' unless $pass;
     $encrypt_mode = ($encrypt_mode eq "S") ? 1 : 0;
+
+    # The main copy of the log file ...
+    my $log_file = "./t/test_trace_log_new.txt";  # A common copy to work with.
+
+    # The custom copy mentioned in the README file.
+    # Only created if "File::Copy" is available on your system.
+    my $copy_file = "./t/test_trace_log_new.$server-$mode-$data-$encrypt_mode.txt";
 
     # -----------------------------------------------------------
     # End of user interaction ...
     # -----------------------------------------------------------
 
+    # This section initializes an unsupported feature to Net::FTPSSL.
+    # Code is left here so that I can easily revisit it in the future if needed.
+    # That's why option SSL_Advanced is commented out below but left uncommented
+    # here.  Do not use this feature unless you absolutely have no choice!
+    my %advanced_hash = ( SSL_version => ($encrypt_mode ? "SSLv23" : "TLSv1"),
+                          Timeout => 99 );
+    # -----------------------------------------------------------
+
     my %callback_hash;
+
+    # Delete test files from previous run
+    unlink ("./t/test_file_new.tar.gz",
+            "./t/FTPSSL.pm_new.tst",
+            $log_file, $copy_file);
 
     # So we can save the Debug trace in a file from this test.
     open (OLDERR, ">&STDERR");
-    open (STDERR, "> ./t/test_trace_log_new.txt");
+    open (STDERR, "> $log_file");
 
+    print STDERR "\nNet-FTPSSL Version: " . $Net::FTPSSL::VERSION . "\n\n";
+
+    # Leave SSL_Advanced commented out ... Unsupported feature ...
     my $ftp = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
                                 DataProtLevel => $data,
                                 useSSL => $encrypt_mode,
+                                # SSL_Advanced => \%advanced_hash,
+                                PreserveTimestamp => 1,
                                 Debug => 1, Trace => 1, Croak => 1 );
 
     isa_ok( $ftp, 'Net::FTPSSL', 'Net::FTPSSL object creation' );
@@ -75,6 +108,7 @@ SKIP: {
     ok( $ftp->cwd( $dir ), "Changed the dir to $dir" );
     my $pwd = $ftp->pwd();
     ok( defined $pwd, "Getting the directory: ($pwd)" );
+    $dir = $pwd  unless (defined $pwd);  # Convert relative to absolute path.
 
     # Turning off croak now that our environment is correct!
     $ftp->set_croak (0);
@@ -100,6 +134,7 @@ SKIP: {
     ok( $ftp->supported("HELP"), "Checking HELP supported again (cached?)" );
     ok( ! $ftp->supported("BADCMD"), "Verifying BADCMD isn't supported" );
     ok( ! $ftp->supported("SITE", "BADCMD"), "Verifying SITE BADCMD isn't supported" );
+    ok( $ftp->_help("BADCMD"), "Getting the BADCMD usage" );  # Never fails
 
     # Verifying we can check out valid SITE sub-commands ...
     # Returns hash ref of valid SITE commands
@@ -117,16 +152,20 @@ SKIP: {
     # Start put/uput/get/rename/delete section ...
     # -----------------------------------------------
 
+    # Check if timestamps are preserved via get/put commands ... (Both sides)
+    my $supported = ($ftp->supported ("MFMT") & $ftp->supported("MDTM"));
+
     ok( $ftp->put( './FTPSSL.pm' ), "puting a test ascii file on $dir" );
 
     # So the supported test will appear in the log file 1st!
     $res = $ftp->supported ("STOU");
     my $uput_name = $ftp->uput ( './FTPSSL.pm' );
+    my $do_delete = 0;
 
     if ($res) {
        ok( $uput_name, "uput the same test ascii file again as: $uput_name" );
        if ( $uput_name ne "FTPSSL.pm" ) {
-          ok( $ftp->delete($uput_name), "deleting $uput_name on $server" );
+          $do_delete = 1;    # Deferring till afer the listings ...
        } else {
           ok( 0, "Did we correctly detect new uput name used? ($uput_name)" );
        }
@@ -150,16 +189,26 @@ SKIP: {
     print_result (\@lst);
     $ftp->set_callback ();   # Disable callbacks again
 
+    @lst = $ftp->list (undef, "*.p?");
+    ok( scalar @lst != 0, 'list() command with wildcards (*.p?)' );
+    print_result (\@lst);
+
+    if ( $do_delete ) {
+       ok( $ftp->delete($uput_name), "deleting $uput_name on $server" );
+    }
+
     # -----------------------------------
     # Check if the rename fails, since that will affect the remaining tests ...
     # Possible reasons: Command not supported or your account doesn't have
     # permission to do the rename!
     # -----------------------------------
+    my $rename_works = 0;
     $res = $ftp->rename ('test_file.tar.gz', 'test_file_new.tar.gz');
     my $msg = $ftp->last_message();      # If it failed, find out why ...
     if ($ftp->supported ("RNFR") && $ftp->supported ("RNTO")) {
        if ($res) {
           ok( $res, 'renaming bin file works' );
+          $rename_works = 1;
        } else {
           ok( ($msg =~ m/Permission denied/) || ($msg =~ m/^550 /),
               "renaming bin file check: ($msg)" );
@@ -168,7 +217,18 @@ SKIP: {
        ok( ! $res, "Rename is not supported on this server" );
     }
 
+    # So we know what to call the renamed file on the FTP server.
     my $file = $res ? "test_file_new.tar.gz" : "test_file.tar.gz";
+
+    $do_delete = 0;
+    ok( $ftp->ascii (), 'putting FTP back in ascii mode' );
+    $res = $ftp->xput ('./FTPSSL.pm', 'ZapMe.pm');
+    $msg = $ftp->last_message();      # If it failed, find out why ...
+    if ($rename_works) {
+       ok ($res, "File Recognizer xput Test Completed");
+    } else {
+       ok (1, "File Recognizer xput Test Skipped ($msg)");
+    }
 
     # With call back
     $ftp->set_callback (\&callback_func, \&end_callback_func, \%callback_hash);
@@ -182,14 +242,37 @@ SKIP: {
     ok( scalar @lst != 0, 'nlst() command' );
     print_result (\@lst);
 
+    @lst = $ftp->nlst (undef, "*.p?");
+    ok( scalar @lst != 0, 'nlst() command with wildcards (*.p?)' );
+    print_result (\@lst);
+
+    # Silently delete it, don't make it part of the test ...
+    # Since if the xput test failed, this test will fail.
+    $ftp->delete ("ZapMe.pm");
+
+    ok( $ftp->binary (), 'putting FTP back in binary mode' );
     ok( $ftp->get($file, './t/test_file_new.tar.gz'), 'retrieving the binary file' );
     ok( $ftp->delete($file), "deleting the test bin file on $server" );
-    ok ( -s './t/test_file.tar.gz' == -s './t/test_file_new.tar.gz', "Verifying BINARY file matches original size" );
+
+    # Now check out the before & after BINARY images
+    ok( -s './t/test_file.tar.gz' == -s './t/test_file_new.tar.gz',
+        "Verifying BINARY file matches original size" );
+    my $same_dates = (stat ('./t/test_file.tar.gz'))[9] == (stat ('./t/test_file_new.tar.gz'))[9];
+    ok( (! $supported) || $same_dates,
+        $supported ? "The binary Timestamps were preserved!"
+                   : "Preserving Binary timestamps are not supported!" );
 
     ok( $ftp->ascii (), 'putting FTP back in ascii mode' );
     ok( $ftp->get("FTPSSL.pm", './t/FTPSSL.pm_new.tst'), 'retrieving the ascii file again' );
     ok( $ftp->delete("FTPSSL.pm"), "deleting the test file on $server" );
-    ok ( -s './FTPSSL.pm' == -s './t/FTPSSL.pm_new.tst', "Verifying ASCII file matches original size" );
+
+    # Now check out the before & after ASCII images
+    ok( -s './FTPSSL.pm' == -s './t/FTPSSL.pm_new.tst',
+        "Verifying ASCII file matches original size" );
+    $same_dates = (stat ('./FTPSSL.pm'))[9] == (stat ('./t/FTPSSL.pm_new.tst'))[9];
+    ok( (! $supported) || $same_dates,
+        $supported ? "The ASCII Timestamps were preserved!"
+                   : "Preserving ASCII timestamps are not supported!" );
 
     $file = "delete_me_I_do_not_exist.txt";
     ok ( ! $ftp->get ($file), "Get a non-existant file!");
@@ -210,6 +293,19 @@ SKIP: {
     open (STDERR, ">&OLDERR");
     if (1 == 2) {
        print OLDERR "\n";   # Perl gives warning if not present!  (Not executed)
+    }
+
+    # Create the custom copy mentioned in the README file.
+    # Only created if File::Copy is available since we don't want
+    # to require it just for this copy to work in this test program!
+    eval {
+       require File::Copy;
+
+       File::Copy::copy ($log_file, $copy_file);
+    };
+    if ($@) {
+        print STDERR "\nCan't create the custom copy of the log file!\n";
+        print STDERR "You must install File::Copy if you need this!\n\n";
     }
 }
 
@@ -239,7 +335,7 @@ sub print_result {
 
    # Tell the max number of entries you may print out.
    # Just in case the list is huge!
-   my $cnt = 4;
+   my $cnt = 5;
 
    my $max = scalar (@{$lst});
    print STDERR "------------- Found $max file(s) -----------------\n";
@@ -255,7 +351,7 @@ sub print_result {
    print STDERR "-----------------------------------------------\n";
 }
 
-# Testing out the call back functionality of v0.07.
+# Testing out the call back functionality of v0.07 on ...
 sub callback_func {
    my $ftps_function_name = shift;
    my $data_ref     = shift;      # The data to/from the data channel.
@@ -265,9 +361,9 @@ sub callback_func {
 
    if ( $ftps_function_name =~ m/:list$/ ) {
       ${$data_ref} =~ s/[a-z]/\U$&/g;    # Convert to upper case!
-      # Format #'s Ex: 1234567 into 1,234,567.
+      # Reformat #'s Ex: 1234567 into 1,234,567.
       while ( ${$data_ref} =~ s/(\d)(\d{3}\D)/$1,$2/ ) { }
-      ${$data_len_ref} = length (${$data_ref});  # Changed length of data!
+      ${$data_len_ref} = length (${$data_ref});  # May have changed data length!
 
    } elsif ( $ftps_function_name =~ m/:nlst$/ ) {
       ${$data_ref} =~ s/[a-z]/\U$&/g;    # Convert to upper case!
@@ -291,11 +387,11 @@ sub callback_func {
    return ();
 }
 
-# Testing out the end call back functionality of v0.07.
+# Testing out the end call back functionality of v0.07 on ...
 sub end_callback_func {
    my $ftps_function_name = shift;
-   my $total_len          = shift;  # The total number of bytes sent out
-   my $callback_data_ref = shift;   # The callback work space.
+   my $total_len          = shift;   # The total number of bytes sent out
+   my $callback_data_ref  = shift;   # The callback work space.
 
    my $tail;   # Additional data channel data to provide ...
 

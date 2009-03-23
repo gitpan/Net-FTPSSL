@@ -3,6 +3,48 @@ Revision history for Perl extension Net::FTPSSL.
 Version - YYYY/MM/DD
 --------------------
 
+0.08 2009/03/23 08:30:00
+  - Fixed new() to also accept a hash reference.  So can do either way now!
+    Pass the hash by reference or pass the hash by value.
+  - Fixed command() & response() undefined function bug when called by a
+    socket data type in new() and a fatal error was encountered.  Solved by
+    not calling the member function in the normal way.
+  - Added $Net::FTPSSL::ERRSTR to give you access to the error messages
+    generated when you couldn't create a Net::FTPSSL object via new().  Also
+    set when Croak is called even though you had the special perl variable $@
+    for this. It is also printed to STDERR when Debug is turned on.
+  - Fixed response() case where the ending message had CR's in it and it was
+    being truncated.
+  - Fixed response() to detect unexpected EOF: Bug # 43670.
+  - Now passes Timeout to start_SSL() calls in new().
+  - Added plain old FTP as option CLR_CRYPT.  Just avoids encrypting the
+    command channel.  Still doesn't support the CCC command.
+  - Fixed implicit problem.  Turned out to be a bug in choosing the "default"
+    port as well as reading the response to soon. Bug # 28914.
+  - Exposed all the FTP CMD status constants for public use.
+  - Added unsupported option SSL_Advanced for Enhancement Request # 44042.
+    Use at your own risk!  It's not supported by the developer of Net::FTPSSL.
+  - Enhanced t/10-complex.t to print the version of Net-FTPSSL being tested and
+    support/test the new functionality.  Also now generates a backup copy of
+    the trace log named after the options selected to ease testing of multiple
+    configurations.
+  - Added xput for avoiding file recognizer issues on the FTPS server side
+    during file transfers.  IE the file recognizer picks the file up before the
+    transfer completes.  After the rename the file recognizer can safely assume
+    the file transfer has completed without issues.
+  - Added option in new() to support preserving the timestamps on files
+    transfered between the client & server via get(), put(), uput() & xput().
+    Works providing the FTPS server supports this functionality.
+  - Fixed response() timing bug where sysread() sometimes read the results of
+    multiple commands.  Ex: the 150 INFO msg for opening the data connection and
+    the 226 transfer complete message.  This bug caused FTPSSL to randomly hang
+    when connected to some servers.
+  - Fixed bug where nlst() hung if it returned zero rows on some servers.
+  - Removed total from list() since it wasn't always present for all servers
+    and it was the total block size, not the total # of files or bytes returned.
+  - Fixed list() & nlst() to allow wildcard filters similar to unix "ls" cmd.
+    The only wildcards being "*" or "?".
+
 0.07 2009/02/24 08:30:00
   - Corrected some typos in the documentation.
   - Implemented call back functionality for all data channel functions.
@@ -28,19 +70,23 @@ Version - YYYY/MM/DD
   - user() & password() have been renamed since internal functions.
 
 0.06 2009/02/03 08:30:00
-  - Added new() DataProtLevel option to allow selecting the Data Channel Protection.
+  - Added new() DataProtLevel option to allow selecting the Data Channel
+    Protection.
   - Fixed _help() so supported() works for some new servers.
   - new() now allows you to select SSL over TLS for connections via useSSL.
-  - Fixed get() bug that sometimes added an extra \015 to ASCII files downloaded.
+  - Fixed get() bug that sometimes added extra \015 to ASCII files downloaded.
     Introduced when Bug 17537 was fixed.
   - Enhanced t/10-complex.t
 
 0.05 2009/01/05 08:30:00
-  - Fixed resonse() to properly get the entire response instead of just the 1st line of it.
-    This change fixes many of the reported bugs reported against this module.
-  - Fixed command() & response() to also log socket() calls in debug mode with "SKT >>>" & "SKT <<<" prefixes.
+  - Fixed resonse() to properly get the entire response instead of just the 1st
+    line of it.  This change fixes many of the reported bugs reported against
+    this module.
+  - Fixed command() & response() to also log socket() calls in debug mode with
+    "SKT >>>" & "SKT <<<" prefixes.
   - Added supported(), quot(), & _help()
-  - All response calls in new() are now tested & added debug flag to socket object.
+  - All response calls in new() are now tested & added debug flag to socket
+    object.
   - Enhanced t/10-complex.t
   - Other minor fixes.
   - Bugs Fixed: 41665, 31720, 16751, 30359, 24136, 17537, 17538, 34818
