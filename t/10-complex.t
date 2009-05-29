@@ -9,9 +9,10 @@
 
 use strict;
 
-use Test::More tests => 41;
+use Test::More tests => 42;
+use File::Copy;
 
-# plan tests => 40;  # Can't use due to BEGIN block
+# plan tests => 41;  # Can't use due to BEGIN block
 
 BEGIN { use_ok('Net::FTPSSL') }    # Test # 1
 
@@ -24,7 +25,7 @@ diag( "where the user has permissions to read and write." );
 my $more_test = ask_yesno("Do you want to make a deeper test");
 
 SKIP: {
-    skip "Deeper test skipped for some reason...", 40 unless $more_test;
+    skip "Deeper test skipped for some reason...", 41 unless $more_test;
 
     my( $address, $server, $port, $user, $pass, $dir, $mode, $data, $encrypt_mode ); 
 
@@ -63,7 +64,6 @@ SKIP: {
     my $log_file = "./t/test_trace_log_new.txt";  # A common copy to work with.
 
     # The custom copy mentioned in the README file.
-    # Only created if "File::Copy" is available on your system.
     my $copy_file = "./t/test_trace_log_new.$server-$mode-$data-$encrypt_mode.txt";
 
     # -----------------------------------------------------------
@@ -222,12 +222,14 @@ SKIP: {
 
     $do_delete = 0;
     ok( $ftp->ascii (), 'putting FTP back in ascii mode' );
-    $res = $ftp->xput ('./FTPSSL.pm', 'ZapMe.pm');
+    $res = $ftp->xput ('./FTPSSL.pm', './ZapMe.pm');
     $msg = $ftp->last_message();      # If it failed, find out why ...
     if ($rename_works) {
-       ok ($res, "File Recognizer xput Test Completed");
+       ok ($res, "File Recognizer xput Test to a directory Completed");
+       ok ($ftp->xput ('./FTPSSL.pm', 'ZapMe2.pm'), "Using current directory");
     } else {
        ok (1, "File Recognizer xput Test Skipped ($msg)");
+       ok( $ftp->noop(), "Noop test - Skip 2nd xput test as well" );
     }
 
     # With call back
@@ -249,6 +251,7 @@ SKIP: {
     # Silently delete it, don't make it part of the test ...
     # Since if the xput test failed, this test will fail.
     $ftp->delete ("ZapMe.pm");
+    $ftp->delete ("ZapMe2.pm");
 
     ok( $ftp->binary (), 'putting FTP back in binary mode' );
     ok( $ftp->get($file, './t/test_file_new.tar.gz'), 'retrieving the binary file' );
@@ -263,7 +266,7 @@ SKIP: {
                    : "Preserving Binary timestamps are not supported!" );
 
     ok( $ftp->ascii (), 'putting FTP back in ascii mode' );
-    ok( $ftp->get("FTPSSL.pm", './t/FTPSSL.pm_new.tst'), 'retrieving the ascii file again' );
+    ok( $ftp->xget("FTPSSL.pm", './t/FTPSSL.pm_new.tst'), 'retrieving the ascii file again' );
     ok( $ftp->delete("FTPSSL.pm"), "deleting the test file on $server" );
 
     # Now check out the before & after ASCII images
@@ -276,11 +279,12 @@ SKIP: {
 
     $file = "delete_me_I_do_not_exist.txt";
     ok ( ! $ftp->get ($file), "Get a non-existant file!");
-    my $del = glob ($file);
-    my $size = -s $file;
-    unlink ($file);
-    if ($del) {
-       print STDERR " *** Deleted local file: $del  [$size byte(s)].\n";
+    if (-f $file) {
+       my $size = -s $file;
+       unlink ($file);
+       print STDERR " *** Deleted local file: $file  [$size byte(s)].\n";
+    } else {
+       print STDERR " *** No local copy was created!\n";
     }
 
     # -----------------------------------------
@@ -296,17 +300,7 @@ SKIP: {
     }
 
     # Create the custom copy mentioned in the README file.
-    # Only created if File::Copy is available since we don't want
-    # to require it just for this copy to work in this test program!
-    eval {
-       require File::Copy;
-
-       File::Copy::copy ($log_file, $copy_file);
-    };
-    if ($@) {
-        print STDERR "\nCan't create the custom copy of the log file!\n";
-        print STDERR "You must install File::Copy if you need this!\n\n";
-    }
+    File::Copy::copy ($log_file, $copy_file);
 }
 
 sub ask {

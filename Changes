@@ -3,6 +3,26 @@ Revision history for Perl extension Net::FTPSSL.
 Version - YYYY/MM/DD
 --------------------
 
+0.09 2009/05/13 08:30:00
+  - Fixed some typos in the documentation.
+  - Fixed so list() & nlst() no longer return undef on some errors instead of
+    the empty list as documented.
+  - Fixed bug # 45710 where nlst() has issues returning zero rows.
+  - Fixed xput() so the scratch file is guaranteed to appear in the same
+    directory as the final file unless the prefix overrides it with a directory
+    of it's own.  Fixes issue where the remote file wasn't being written to the
+    current directory on the remote server and we couldn't write to the current
+    directory on that server.
+  - Added xget() as the complement to xput().  Where the file recognizer is on
+    the client side.
+  - Added ccc() for finally supporting the CCC command.
+  - Improved get() logic for removing zero byte files if it can't download the
+    requested file.  Still leaves behind partially downloaded files on purpose.
+  - Enhanced t/10-complex.t to test new functionality. (But not CCC due to
+    security concerns.)
+  - Added last_status_code() to return the 1 digit status returned by message()
+    so your code can branch on particular issues instead of just pass/fail.
+
 0.08 2009/03/23 08:30:00
   - Fixed new() to also accept a hash reference.  So can do either way now!
     Pass the hash by reference or pass the hash by value.
@@ -52,6 +72,7 @@ Version - YYYY/MM/DD
     true/false.   Will still return "undef" on failure.  Needed in order to
     figure out what the other server actually called the file we sent it.
   - Exposed the DataProtLevel constants for public use.
+  - Added callback feature for all data channel FTP functions.
   - Now uses caller() extensively to combine multiple similar functions together
     and for callback support.
   - Another fix to the get() bug introduced by the Bug 17537 fix.  The previous

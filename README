@@ -1,4 +1,4 @@
-Net-FTPSSL version 0.08
+Net-FTPSSL version 0.09
 =======================
 
 Net::FTPSSL is an object oriented Perl module which implements a simple
@@ -26,12 +26,10 @@ The 3 main generated files are:
    ./t/FTPSSL.pm_new.txt         - Test ascii file downloaded
    ./t/test_file_new.tar.gz      - Test binary file downloaded.
 
-   - Another custom trace log is also created if File::Copy is available.  This
-   - way it keeps separate copies of all your various tests without you having
-   - to remember to rename them after each test.  This custom backup is named
-   - after some of your responses to the questions.  This allows for easy
-   - comparisons between the responses of different servers using different
-   - options.
+   - Another custom trace log is created that is named after some of your
+   - responses to the questions.  This allows for easy comparisons between the
+   - responses of different servers using different options.  Without having to
+   - remember to save a copy of the original file yourself.
 
    ./t/test_trace_log_new.${server}-${cmd_channel_encrpt_mode}-${data_encrypt_mode}-${ssl_tls_mode}.txt
 
@@ -77,6 +75,7 @@ This module requires these other modules and libraries:
  File::Basename
  Time::Local
  Sys::Hostname
+ File::Copy
 
 
 COPYRIGHT AND LICENCE
