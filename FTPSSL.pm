@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : kral <kral at paranici dot org>
 # Created : 01 March 2005
-# Version : 0.09
+# Version : 0.10
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -19,7 +19,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.09";
+$VERSION = "0.10";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -65,27 +65,47 @@ sub new {
   my $port         = ($encrypt_mode eq IMP_CRYPT)
                                ? 990 : ($arg->{Port} || 21);
   my $debug        = $arg->{Debug} || 0;
+  my $trace        = $arg->{Trace} || 0;
   my $timeout      = $arg->{Timeout} || 120;
   my $buf_size     = $arg->{Buffer} || 10240;
-  my $trace        = $arg->{Trace} || 0;
   my $data_prot    = ($encrypt_mode eq CLR_CRYPT) ? DATA_PROT_CLEAR
                                  : ($arg->{DataProtLevel} || DATA_PROT_PRIVATE);
   my $use_ssl      = $arg->{useSSL} || 0;
   my $die          = $arg->{Croak} || $arg->{Die};
   my $pres_ts      = $arg->{PreserveTimestamp} || 0;
+  my $use_logfile  = $debug && (defined $arg->{DebugLogFile} &&
+                                $arg->{DebugLogFile} ne "");
 
   # Using this feature is unsupported.  Use at own risk!
   my $advanced     = (ref ($arg->{SSL_Advanced}) eq "HASH")
                                    ? $arg->{SSL_Advanced} : \%ssl_args;
 
-  return _croak_or_return (undef, $die, $debug, "Host undefined")  unless $host;
+  # Determine where to write the Debug & Trace info to ...
+  if ( $use_logfile ) {
+     my $f = $arg->{DebugLogFile};
+     open ( FTPS_ERROR, "> $f" ) or
+               _croak_or_return (undef, 1, 0,
+                                 "Can't create debug logfile: $f ($!)");
+     $debug = 2;                  # Already know Debug is turned on ...
+  } else {
+     open ( FTPS_ERROR, ">&STDERR" ) or
+               _croak_or_return (undef, 1, 0,
+                              "Can't attach the debug logfile to STDERR. ($!)");
+     FTPS_ERROR->autoflush (1);
+     $debug = 1  if ( $debug );   # Force to a specific Debug value ...
+  }
 
-  return _croak_or_return (undef, $die, $debug,
+  # Determines if we die if we will need to also write to the error log file ...
+  my $dbg_flg = $die ? ( $debug == 2 ? 1 : 0 ) : $debug;
+
+  return _croak_or_return (undef, $die, $dbg_flg, "Host undefined")  unless $host;
+
+  return _croak_or_return (undef, $die, $dbg_flg,
                            "Encryption mode unknown!  ($encrypt_mode)")
       if ( $encrypt_mode ne IMP_CRYPT && $encrypt_mode ne EXP_CRYPT &&
            $encrypt_mode ne CLR_CRYPT );
 
-  return _croak_or_return (undef, $die, $debug,
+  return _croak_or_return (undef, $die, $dbg_flg,
                            "Data Channel mode unknown! ($data_prot)")
       if ( $data_prot ne DATA_PROT_CLEAR &&
            $data_prot ne DATA_PROT_SAFE &&
@@ -101,7 +121,7 @@ sub new {
                          Timeout  => $timeout
                          )
                    or
-            return _croak_or_return (undef, $die, $debug,
+            return _croak_or_return (undef, $die, $dbg_flg,
                                   "Can't open tcp connection! ($host:$port)");
 
   $socket->autoflush(1);
@@ -160,31 +180,31 @@ sub new {
 
   # Print out the details of the SSL object.  Set to TRUE only for debugging!
   if ( $debug && ref ($arg->{SSL_Advanced}) eq "HASH" ) {
-     print STDERR "\nObject SSL Details ... ($host:$port - $encrypt_mode)\n";
+     print FTPS_ERROR "\nObject SSL Details ... ($host:$port - $encrypt_mode)\n";
      foreach (keys %{*$obj}) {
         my $x = ${*$obj}{$_};
         $x="(undef)" unless (defined $x);
         $x = join ("\n         ", split (/\n/, $x))  if (! ref($x));
-        print STDERR "  $_ ==> $x\n";
+        print FTPS_ERROR "  $_ ==> $x\n";
         if ($x =~ m/HASH\(0/) {
            foreach (keys %{$x}) {
               my $y = $x->{$_};
               $y="(undef)" unless (defined $y);
               $y = join ("\n                   ", split (/\n/, $y)) if (! ref($y));
-              print STDERR "        -- $_ ===> $y\n";
+              print FTPS_ERROR "        -- $_ ===> $y\n";
            }
         }
      }
-     print STDERR "\n";
+     print FTPS_ERROR "\n";
   }
 
   # These options control the behaviour of the Net::FTPSSL class ...
   ${*$obj}{Crypt}     = $encrypt_mode;
   ${*$obj}{debug}     = $debug;
+  ${*$obj}{trace}     = $trace;
   ${*$obj}{timeout}   = $timeout;
   ${*$obj}{buf_size}  = $buf_size;
   ${*$obj}{type}      = MODE_ASCII;
-  ${*$obj}{trace}     = $trace;
   ${*$obj}{data_prot} = $data_prot;
   ${*$obj}{Croak}     = $die;
   ${*$obj}{FixPutTs}  = ${*$obj}{FixGetTs} = $pres_ts;
@@ -234,7 +254,7 @@ sub pasv {
   $self->command("PASV");
 
   # my $msg = $self->getline();
-  # print STDERR "<<< " . $msg if ${*$self}{debug};
+  # print FTPS_ERROR "<<< " . $msg if ${*$self}{debug};
   # unless ( substr( $msg, 0, 1 ) == CMD_OK ) { return undef; }
 
   unless ( $self->response () == CMD_OK ) { return $self->_croak_or_return (); }
@@ -379,7 +399,7 @@ sub list {
         $pattern = '\s+(' . $pattern . ')($|\s+->\s+)';
      }
 
-     print STDERR "PATTERN: <- $p => $pattern ->\n"  if ( ${*$self}{debug} );
+     print FTPS_ERROR "PATTERN: <- $p => $pattern ->\n"  if ( ${*$self}{debug} );
 
      # Now only keep those files that match the pattern.
      my @res;
@@ -739,7 +759,7 @@ sub xget {              # A variant of the regular get (RETR command)
 
    # Make it visisble to the local file recognizer on success ...
    if ( $resp ) {
-      print STDERR "<<+ renamed $scratch_name to $file_loc\n"  if (${*$self}{debug});
+      print FTPS_ERROR "<<+ renamed $scratch_name to $file_loc\n"  if (${*$self}{debug});
       move ( $scratch_name, $file_loc ) or
            return $self->_croak_or_return (0, "Can't rename the local scratch file!");
    }
@@ -1001,7 +1021,7 @@ sub supported {
       }
    }
 
-   print STDERR "<<+ " . ${*$self}{last_ftp_msg} . "\n" if ${*$self}{debug};
+   print FTPS_ERROR "<<+ " . ${*$self}{last_ftp_msg} . "\n" if ${*$self}{debug};
 
    return ($result);
 }
@@ -1061,7 +1081,7 @@ sub quot {
       ${*$self}{last_ftp_msg} = "x22 Data Connections are not supported via " .
                                 "quot().  [$cmd]";
       substr (${*$self}{last_ftp_msg}, 0, 1) = CMD_REJECT;
-      print STDERR "<<+ " . ${*$self}{last_ftp_msg} . "\n" if ${*$self}{debug};
+      print FTPS_ERROR "<<+ " . ${*$self}{last_ftp_msg} . "\n" if ${*$self}{debug};
       return (CMD_REJECT);
    }
 
@@ -1362,14 +1382,14 @@ sub _test_croak {
 
 #-----------------------------------------------------------------------
 #  Error handling - Decides if to Croak or return undef ...
-#  Has 2 modes, a regular member func & when not a member ...
+#  Has 2 modes, a regular member func & when not a member func ...
 #-----------------------------------------------------------------------
 
 sub _croak_or_return {
    my $self = shift;
 
    # The error code to use if we update the last message!
-   # Or if we print it to STDERR & we don't croak!
+   # Or if we print it to FTPS_ERROR & we don't croak!
    my $err = CMD_ERROR . CMD_ERROR . CMD_ERROR;
 
    unless (defined $self) {
@@ -1378,11 +1398,11 @@ sub _croak_or_return {
       my $should_we_print = shift;
       $ERRSTR = shift || "Unknown Error";
 
+      print FTPS_ERROR "<<+ $err " . $ERRSTR . "\n" if ( $should_we_print );
       croak ( $ERRSTR . "\n" )   if ( $should_we_die );
-      print STDERR "<<+ $err " . $ERRSTR . "\n" if ( $should_we_print );
 
    } else {
-      # Called this way by everyone else ...
+      # Called this way as a memeber func by everyone else ...
       my $replace_mode = shift;  # 1 - append, 0 - replace,
                                  # undef - leave last_message() unchanged
       my $msg = shift;
@@ -1405,11 +1425,18 @@ sub _croak_or_return {
             ${*$self}{last_ftp_msg} = $tmp;
          }
 
+         # Only do if writing the message to the error log file ...
+         if ( defined $replace_mode && uc ($msg) ne "" &&
+              ${*$self}{debug} == 2 ) {
+            print FTPS_ERROR "<<+ $err " . $msg . "\n";
+         }
+
          croak ( $ERRSTR . "\n" );
       }
 
-      if ( defined $replace_mode && uc ($msg) ne ""  ) {
-         print STDERR "<<+ $err " . $msg . "\n" if ${*$self}{debug};
+      # Handles both cases of writing to STDERR or the error log file ...
+      if ( defined $replace_mode && uc ($msg) ne "" && ${*$self}{debug} ) {
+         print FTPS_ERROR "<<+ $err " . $msg . "\n";
       }
    }
 
@@ -1439,9 +1466,9 @@ sub command {
   if ( ${*$self}{debug} ) {
      my $prefix = ( ref($self) eq "Net::FTPSSL" ) ? ">>> " : "SKT >>> ";
      if ( $data =~ m/^PASS\s/ ) {
-        print STDERR $prefix . "PASS *******\n";   # Don't echo passwords
+        print FTPS_ERROR $prefix . "PASS *******\n";   # Don't echo passwords
      } else {
-        print STDERR $prefix . $data . "\n";       # Echo everything else
+        print FTPS_ERROR $prefix . $data . "\n";       # Echo everything else
      }
   }
 
@@ -1506,7 +1533,7 @@ sub response {
      foreach my $line ( @lines ) {
        if ( $remember ) {
           # Continuing to save the next response for next time ...
-          print STDERR "Saving rest of the next response! ($line)\n"  if ${*$self}{debug};
+          print FTPS_ERROR "Saving rest of the next response! ($line)\n"  if ${*$self}{debug};
           ${*$self}{next_ftp_msg} .= "\015\012" . $line;
           next;
        }
@@ -1520,7 +1547,7 @@ sub response {
 
        if ( $done && defined $sep ) {
           # We read past the end of the current response into the next one ...
-          print STDERR "Attempted to read past end of response! ($line)\n"   if ${*$self}{debug};
+          print FTPS_ERROR "Attempted to read past end of response! ($line)\n"   if ${*$self}{debug};
           ${*$self}{next_ftp_msg} = $line;
           $remember = 1;
           $code = $last_code;
@@ -1528,7 +1555,7 @@ sub response {
        }
        $code = $last_code  unless ( defined $code );
 
-       print STDERR $prefix . $line . "\n"   if ${*$self}{debug};
+       print FTPS_ERROR $prefix . $line . "\n"   if ${*$self}{debug};
 
        ${*$self}{last_ftp_msg} .= "\n" if ($done);
 
@@ -1665,7 +1692,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.09
+=head1 VERSION 0.10
 
 =head1 SYNOPSIS
 
@@ -1713,14 +1740,15 @@ failure in B<$Net::FTPSSL::ERRSTR>.
 
 C<OPTIONS> are:
 
-B<Port> - The port number to connect to on the remote FTP server.
-Default value is 21 for B<EXP_CRYPT> and B<CLR_CRYPT> or 990 for B<IMP_CRYPT>.
-
 B<Encryption> - The connection can be implicitly (B<IMP_CRYPT>) encrypted,
 explicitly (B<EXP_CRYPT>) encrypted, or regular FTP (B<CLR_CRYPT>).
 In explicit cases the connection begins clear and became encrypted after an
 "AUTH" command is sent, while implicit starts off encrypted.  For B<CLR_CRYPT>,
 the connection never becomes encrypted.  Default value is B<EXP_CRYPT>.
+
+B<Port> - The port number to connect to on the remote FTP server.
+Default value is 21 for B<EXP_CRYPT> and B<CLR_CRYPT>.  But for B<IMP_CRYPT>
+you can't override the required 990 port.
 
 B<DataProtLevel> - The level of security on the data channel.  The default is
 B<DATA_PROT_PRIVATE>, where the data is also encrypted. B<DATA_PROT_CLEAR> is
@@ -1740,9 +1768,13 @@ file's timestamp.  By default it will not preserve the timestamps.
 B<Buffer> - This is the block size that Net::FTPSSL will use when a transfer is
 made. Default value is 10240.
 
-B<Debug> - This turns the debug information option on/off. Default is off.
+B<Debug> - This turns the debug tracing option on/off. Default is off.
 
 B<Trace> - Turns on/off put/get download tracing to STDERR.  Default is off.
+
+B<DebugLogFile> - Redirects the output of B<Debug> from F<STDERR> to the
+requested error log file name.  This option is ignored unless B<Debug> is also
+turned on.  Enforced this way for backwards compatability.
 
 B<Croak> - Force most methods to call I<croak()> on failure instead of returning
 I<FALSE>.  The default is to return I<FALSE> or I<undef> on failure.  When it

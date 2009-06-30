@@ -1,4 +1,4 @@
-Net-FTPSSL version 0.09
+Net-FTPSSL version 0.10
 =======================
 
 Net::FTPSSL is an object oriented Perl module which implements a simple
@@ -55,7 +55,7 @@ The desired log file is called:
 If these tests pass and it's your program that's failing, then I'd need a copy
 of a simple test program to demonstrate the error with Debug turned on and it's
 corresponding trace log.  You can turn it on with the following command:
-          Net::FTPSSL->new(server, ..., Debug => 1);
+        Net::FTPSSL->new(server, ..., Debug => 1, DebugLogFile => "myLog.txt");
 
 Just be aware that a particular FTPS command may fail if your FTPS server
 doesn't support that command or if your login doesn't have enough permissions

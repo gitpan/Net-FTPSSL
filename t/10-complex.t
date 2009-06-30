@@ -79,13 +79,17 @@ SKIP: {
     # -----------------------------------------------------------
 
     my %callback_hash;
+    my $debug_log = "./t/BABY_new.txt";
 
     # Delete test files from previous run
     unlink ("./t/test_file_new.tar.gz",
             "./t/FTPSSL.pm_new.tst",
-            $log_file, $copy_file);
+            $log_file, $copy_file, $debug_log);
 
     # So we can save the Debug trace in a file from this test.
+    # We don't use DebugLogFile for this on purpose so that everything
+    # written to STDERR is in the log file, including msgs from this test!
+    # But doing it this way is very undesireable in a real program!
     open (OLDERR, ">&STDERR");
     open (STDERR, "> $log_file");
 
@@ -97,6 +101,7 @@ SKIP: {
                                 useSSL => $encrypt_mode,
                                 # SSL_Advanced => \%advanced_hash,
                                 PreserveTimestamp => 1,
+                                # DebugLogFile => $debug_log,
                                 Debug => 1, Trace => 1, Croak => 1 );
 
     isa_ok( $ftp, 'Net::FTPSSL', 'Net::FTPSSL object creation' );

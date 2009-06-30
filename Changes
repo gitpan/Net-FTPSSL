@@ -3,6 +3,14 @@ Revision history for Perl extension Net::FTPSSL.
 Version - YYYY/MM/DD
 --------------------
 
+0.10 2009/06/30 08:30:00
+  - Updated the Port vs IMP_CRYPT documentation to state you can't override
+    port 990 for IMP_CRYPT.  Where before this was just assumed.
+  - Added option DebugLogFile to allow you to write your Debug info to a
+    file of your choice instead of STDERR.  This way multiple FTPS connections
+    can be traced separately of each other.  Also keeps other writes to STDERR
+    separate.
+
 0.09 2009/05/13 08:30:00
   - Fixed some typos in the documentation.
   - Fixed so list() & nlst() no longer return undef on some errors instead of
@@ -12,10 +20,10 @@ Version - YYYY/MM/DD
     directory as the final file unless the prefix overrides it with a directory
     of it's own.  Fixes issue where the remote file wasn't being written to the
     current directory on the remote server and we couldn't write to the current
-    directory on that server.
+    directory on that server for the scratch file.
   - Added xget() as the complement to xput().  Where the file recognizer is on
     the client side.
-  - Added ccc() for finally supporting the CCC command.
+  - Added ccc() for finally supporting the CCC command. (Clear Command Channel)
   - Improved get() logic for removing zero byte files if it can't download the
     requested file.  Still leaves behind partially downloaded files on purpose.
   - Enhanced t/10-complex.t to test new functionality. (But not CCC due to
