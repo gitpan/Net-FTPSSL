@@ -9,10 +9,10 @@
 
 use strict;
 
-use Test::More tests => 42;
+use Test::More tests => 44;
 use File::Copy;
 
-# plan tests => 41;  # Can't use due to BEGIN block
+# plan tests => 43;  # Can't use due to BEGIN block
 
 BEGIN { use_ok('Net::FTPSSL') }    # Test # 1
 
@@ -25,7 +25,7 @@ diag( "where the user has permissions to read and write." );
 my $more_test = ask_yesno("Do you want to make a deeper test");
 
 SKIP: {
-    skip "Deeper test skipped for some reason...", 41 unless $more_test;
+    skip "Deeper test skipped for some reason...", 43 unless $more_test;
 
     my( $address, $server, $port, $user, $pass, $dir, $mode, $data, $encrypt_mode ); 
 
@@ -57,7 +57,7 @@ SKIP: {
     $mode = EXP_CRYPT unless $mode =~ /^(I|E|C|)$/;
     $data = DATA_PROT_PRIVATE unless $data =~ /^(C|S|E|P|)$/;
     $user = 'anonymous' unless $user;
-    $pass = 'user@localhost' unless $pass;
+    if ( $pass eq " " ) { $pass = ""; } elsif ( ! $pass) { $pass = 'user@localhost' unless $pass; }
     $encrypt_mode = ($encrypt_mode eq "S") ? 1 : 0;
 
     # The main copy of the log file ...
@@ -113,7 +113,7 @@ SKIP: {
     ok( $ftp->cwd( $dir ), "Changed the dir to $dir" );
     my $pwd = $ftp->pwd();
     ok( defined $pwd, "Getting the directory: ($pwd)" );
-    $dir = $pwd  unless (defined $pwd);  # Convert relative to absolute path.
+    $dir = $pwd  if (defined $pwd);     # Convert relative to absolute path.
 
     # Turning off croak now that our environment is correct!
     $ftp->set_croak (0);
@@ -283,7 +283,7 @@ SKIP: {
                    : "Preserving ASCII timestamps are not supported!" );
 
     $file = "delete_me_I_do_not_exist.txt";
-    ok ( ! $ftp->get ($file), "Get a non-existant file!");
+    ok ( ! $ftp->get ($file), "Get a non-existant file!" );
     if (-f $file) {
        my $size = -s $file;
        unlink ($file);
@@ -291,6 +291,18 @@ SKIP: {
     } else {
        print STDERR " *** No local copy was created!\n";
     }
+
+    # -----------------------------------------
+    # Clear the command channel, do limited work after this ...
+    # -----------------------------------------
+    if ( ! $ftp->supported ("ccc") ) {
+       ok ( $ftp->noop (), "Noop since CCC not supported on this server." );
+    } elsif ( $mode ne "C" ) {
+       ok ( $ftp->ccc (), "Clear Command Channel Test" );
+    } else {
+       ok ( $ftp->noop (), "Noop since CCC not supported in this mode." );
+    }
+    ok ( $ftp->pwd (), "Get Current Directory Again" );
 
     # -----------------------------------------
     # End put/get/rename/delete section ...

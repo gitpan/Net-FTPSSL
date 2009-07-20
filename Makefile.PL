@@ -9,5 +9,5 @@ WriteMakefile(
     PREREQ_PM         => { IO::Socket::SSL => 0.0, Net::SSLeay::Handle => 0.0, File::Basename => 0.0, File::Copy => 0.0, Time::Local => 0.0, Sys::Hostname => 0.0 },
     ($] >= 5.005 ?     ## Add these new keywords supported since 5.005
       (ABSTRACT_FROM  => 'FTPSSL.pm',         # retrieve abstract from module
-       AUTHOR         => 'Curtis Leach <cleach at harrahs dot com>') : ()),
+       AUTHOR         => 'Curtis Leach <cleach at cpan dot org>') : ()),
 );

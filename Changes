@@ -3,6 +3,17 @@ Revision history for Perl extension Net::FTPSSL.
 Version - YYYY/MM/DD
 --------------------
 
+0.11 2009/07/19 08:30:00
+  - Added ccc() to end of 10-complex.t test script.
+  - Updated the ccc() docs on issues with older IO::Socket::SSL versions.
+  - Provided solution to Tkt # 47659, problems with CCC - RFC 4217 Section 12.3.
+    Where CCC behaves differently for different FTPS servers.
+  - Added Debug option to allow writing to DebugLogFile in append mode instead
+    of creating a new log file every time.  So can use same log file when
+    serially making FTPS connections.
+  - Now allows overriding of the IMP_CRYPT port 990 to something else.  Found a
+    server that allowed me to change the implicit port # for this. Tkt # 46851.
+
 0.10 2009/06/30 08:30:00
   - Updated the Port vs IMP_CRYPT documentation to state you can't override
     port 990 for IMP_CRYPT.  Where before this was just assumed.

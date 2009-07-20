@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : kral <kral at paranici dot org>
 # Created : 01 March 2005
-# Version : 0.10
+# Version : 0.11
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -19,7 +19,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.10";
+$VERSION = "0.11";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -62,8 +62,7 @@ sub new {
   my %ssl_args;    # Only referenced via $advanced.
 
   my $encrypt_mode = $arg->{Encryption} || EXP_CRYPT;
-  my $port         = ($encrypt_mode eq IMP_CRYPT)
-                               ? 990 : ($arg->{Port} || 21);
+  my $port         = $arg->{Port} || (($encrypt_mode eq IMP_CRYPT) ? 990 : 21);
   my $debug        = $arg->{Debug} || 0;
   my $trace        = $arg->{Trace} || 0;
   my $timeout      = $arg->{Timeout} || 120;
@@ -82,8 +81,9 @@ sub new {
 
   # Determine where to write the Debug & Trace info to ...
   if ( $use_logfile ) {
+     my $open_mode = ( $debug == 2 ) ? ">>" : ">";
      my $f = $arg->{DebugLogFile};
-     open ( FTPS_ERROR, "> $f" ) or
+     open ( FTPS_ERROR, "$open_mode $f" ) or
                _croak_or_return (undef, 1, 0,
                                  "Can't create debug logfile: $f ($!)");
      $debug = 2;                  # Already know Debug is turned on ...
@@ -180,22 +180,7 @@ sub new {
 
   # Print out the details of the SSL object.  Set to TRUE only for debugging!
   if ( $debug && ref ($arg->{SSL_Advanced}) eq "HASH" ) {
-     print FTPS_ERROR "\nObject SSL Details ... ($host:$port - $encrypt_mode)\n";
-     foreach (keys %{*$obj}) {
-        my $x = ${*$obj}{$_};
-        $x="(undef)" unless (defined $x);
-        $x = join ("\n         ", split (/\n/, $x))  if (! ref($x));
-        print FTPS_ERROR "  $_ ==> $x\n";
-        if ($x =~ m/HASH\(0/) {
-           foreach (keys %{$x}) {
-              my $y = $x->{$_};
-              $y="(undef)" unless (defined $y);
-              $y = join ("\n                   ", split (/\n/, $y)) if (! ref($y));
-              print FTPS_ERROR "        -- $_ ===> $y\n";
-           }
-        }
-     }
-     print FTPS_ERROR "\n";
+     $obj->_debug_print_hash ( $host, $port, $encrypt_mode );
   }
 
   # These options control the behaviour of the Net::FTPSSL class ...
@@ -1041,6 +1026,10 @@ sub ccc {
       return $self->_croak_or_return ();
    }
 
+   # Do before the CCC command so we know which command is available to clear
+   # out the command channel with.  All servers should support one or the other.
+   my $ccc_fix_cmd = $self->supported ("NOOP") ? "NOOP" : "PWD";
+
    # Request that just the commnad channel go clear ...
    $self->command ("CCC");
    unless ( $self->response () == CMD_OK ) {
@@ -1052,14 +1041,27 @@ sub ccc {
    my $bless_type = ref ($self);
 
    # Stop SSL, but leave the socket open!
-   unless ( $self->stop_SSL ( SSL_no_shutdown => 1 ) ) {
+   # Converts $self to IO::Socket::INET object instead of Net::FTPSSL
+   # NOTE: SSL_no_shutdown => 1 doesn't work on some boxes, and when 0,
+   #       it hangs on others without the SSL_fast_shutdown => 1 cmd.
+   unless ( $self->stop_SSL ( SSL_no_shutdown => 0, SSL_fast_shutdown => 1 ) ) {
       return $self->_croak_or_return (undef, "Command Channel downgrade failed!");
    }
 
-   bless ( $self, $bless_type );    # Bless back to the proper class ...
+   # Bless back to Net::FTPSSL from IO::Socket::INET ...
+   bless ( $self, $bless_type );
    ${*$self}{_SSL_opened} = 0;      # To get rid of warning on quit ...
 
-   return (1);
+   # This is a hack, but seems to resolve the command channel corruption
+   # problem where 1st command afer CCC may fail or look strange ...
+   my $ok = CMD_ERROR;
+   foreach ( 1...3 ) {
+      $self->command ($ccc_fix_cmd);
+      $ok = $self->response ();
+      last  if ( $ok == CMD_OK );
+   }
+
+   return ( $self->_test_croak ( $ok == CMD_OK ) );
 }
 
 # Allow the user to send a FTP command directly, BE CAREFUL !!
@@ -1085,9 +1087,12 @@ sub quot {
       return (CMD_REJECT);
    }
 
-   # If you attempt CCC here, just call the correct method instead!
+   # You must call CCC directly, not through this add hock method ...
    if ( $cmd eq "CCC" ) {
-      return ($self->ccc ());   # Ignore other options provided.
+      ${*$self}{last_ftp_msg} = "x22 Why didn't you call CCC directly?";
+      substr (${*$self}{last_ftp_msg}, 0, 1) = CMD_REJECT;
+      print FTPS_ERROR "<<+ " . ${*$self}{last_ftp_msg} . "\n" if ${*$self}{debug};
+      return (CMD_REJECT);
    }
 
    $self->command ($cmd, @_);
@@ -1683,6 +1688,43 @@ sub _fmt_num {
 }
 
 #-----------------------------------------------------------------------
+# To assist in debugging new features for this class ...
+#-----------------------------------------------------------------------
+
+sub _debug_print_hash
+{
+   my $self = shift;
+   my $host = shift;
+   my $port = shift;
+   my $mode = shift;
+
+   print FTPS_ERROR "\nObject SSL Details ...";
+   print FTPS_ERROR " ($host:$port - $mode)"  if (defined $host);
+   print FTPS_ERROR "\n";
+
+   foreach (keys %{*$self}) {
+      if ( ! defined $host ) {
+         next   unless ( m/^(io_|_SSL|SSL)/ );
+      }
+      my $x = ${*$self}{$_};
+      $x="(undef)" unless (defined $x);
+      $x = join ("\n         ", split (/\n/, $x))  if (! ref($x));
+      print FTPS_ERROR "  $_ ==> $x\n";
+      if ($x =~ m/HASH\(0/) {
+         foreach (keys %{$x}) {
+            my $y = $x->{$_};
+            $y="(undef)" unless (defined $y);
+            $y = join ("\n                   ", split (/\n/, $y)) if (! ref($y));
+            print FTPS_ERROR "        -- $_ ===> $y\n";
+         }
+      }
+   }
+   print FTPS_ERROR "\n";
+
+   return;
+}
+
+#-----------------------------------------------------------------------
 
 1;
 
@@ -1692,7 +1734,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.10
+=head1 VERSION 0.11
 
 =head1 SYNOPSIS
 
@@ -1746,15 +1788,16 @@ In explicit cases the connection begins clear and became encrypted after an
 "AUTH" command is sent, while implicit starts off encrypted.  For B<CLR_CRYPT>,
 the connection never becomes encrypted.  Default value is B<EXP_CRYPT>.
 
-B<Port> - The port number to connect to on the remote FTP server.
-Default value is 21 for B<EXP_CRYPT> and B<CLR_CRYPT>.  But for B<IMP_CRYPT>
-you can't override the required 990 port.
+B<Port> - The I<port> number to connect to on the remote FTPS server.  The
+default I<port> is 21 for B<EXP_CRYPT> and B<CLR_CRYPT>.  But for B<IMP_CRYPT>
+the default I<port> is 990.  You only need to provide a I<port> if you need to
+override the default value.
 
 B<DataProtLevel> - The level of security on the data channel.  The default is
 B<DATA_PROT_PRIVATE>, where the data is also encrypted. B<DATA_PROT_CLEAR> is
 for data sent as clear text.  B<DATA_PROT_SAFE> and B<DATA_PROT_CONFIDENTIAL>
 are not currently supported.  If B<CLR_CRYPT> was selected, the data channel
-is always B<DATA_PROT_CLEAR>.
+is always B<DATA_PROT_CLEAR> and can't be overridden.
 
 B<useSSL> - Use this option to connect to the server using SSL instead of TLS.
 TLS is the default encryption type and the more secure of the two protocols.
@@ -1768,13 +1811,15 @@ file's timestamp.  By default it will not preserve the timestamps.
 B<Buffer> - This is the block size that Net::FTPSSL will use when a transfer is
 made. Default value is 10240.
 
-B<Debug> - This turns the debug tracing option on/off. Default is off.
+B<Debug> - This turns the debug tracing option on/off. Default is off. (0,1,2)
 
 B<Trace> - Turns on/off put/get download tracing to STDERR.  Default is off.
 
 B<DebugLogFile> - Redirects the output of B<Debug> from F<STDERR> to the
 requested error log file name.  This option is ignored unless B<Debug> is also
-turned on.  Enforced this way for backwards compatability.
+turned on.  Enforced this way for backwards compatability.  If B<Debug> is set
+to B<2>, the log file will be opened in I<append> mode instead of creating a
+new log file.
 
 B<Croak> - Force most methods to call I<croak()> on failure instead of returning
 I<FALSE>.  The default is to return I<FALSE> or I<undef> on failure.  When it
@@ -1958,13 +2003,19 @@ Allows you to rename the file on the server.
 
 =item ccc( [ DataProtLevel ] )
 
-Sends the clear command channel request to the SFTP server.  If you provide the
+Sends the clear command channel request to the FTPS server.  If you provide the
 I<DataProtLevel>, it will change it from the current data protection level to
 this one before it sends the B<CCC> command.  After the B<CCC> command, the
 data channel protection level can not be changed again and will always remain
 at this setting.  Also once you execute the B<CCC> request, you will have to
 create a new I<Net::FTPSSL> object to secure the command channel again.  I<Due
 to security concerns it is recommended that you do not use this method.>
+
+If the version of I<IO::Socket::SSL> you have installed is too old, this
+function will not work since I<stop_SSL> won't be defined (like in v1.08).  So 
+it is recommended that you be on at least I<version 1.18> or later if you plan
+on using this function.  A minimum release isn't required since only this
+function breaks on earlier releases.
 
 =item site( ARGS )
 
