@@ -3,6 +3,28 @@ Revision history for Perl extension Net::FTPSSL.
 Version - YYYY/MM/DD
 --------------------
 
+0.12 2009/09/29 08:30:00
+  - Made some POD changes.
+  - Fixed so each class instance has it's own file hande so multiple instances
+    won't write to the log file of the last Net::FTPSSL->new() call made with
+    Debug turned on.  Also fixed t/10-complex.t to use multiple connections so
+    we can manually verify this is finally corrected.
+  - Made sure the version of FTPSSL used always gets written out when Debug is
+    turned on.  So removed this code from t/10-complex.t as no longer needed.
+  - Fixed "quit" to close the DebugLogFile, will write to STDERR if anything
+    else is improperly called after "quit" is called!
+  - Fixed "put" tie file handle problem from Tkt # 49378.
+  - Added mdtm() & mfmt() to follow FTP specs & exposed _mdtm() & _mfmt() in
+    the POD text, which uses timestamps instead.  Per request # 49376.  The
+    underscore versions are more user friendly.
+  - Added size() per request # 49377.
+  - Minor fixes to 10-complex.t to support new functionality.
+  - Reorged some older code to make it easier to maintain.  Making some blocks
+    of code much smaller and less awkward.
+  - Fixed xput & xget to delete the dest file before renaming the scratch file.
+    Avoids rare file permission issues when the dest file already exists and the
+    file recognizer is down.
+
 0.11 2009/07/19 08:30:00
   - Added ccc() to end of 10-complex.t test script.
   - Updated the ccc() docs on issues with older IO::Socket::SSL versions.
@@ -140,9 +162,11 @@ Version - DD/MM/YYYY -- The Marco Dalla Stella releases.
 
 0.03 05/09/2005 15.01.52 
   - cdup(), mkdir() and rmdir() added
-  - A better sysread() and syswrite() use on list(), nlst(), get(), put() and uput() methods
+  - A better sysread() and syswrite() use on list(), nlst(), get(), put() and
+    uput() methods
   - Added autoflush on list(), nlst(), get(), put() and uput() methods
-  - A better interactive test, (the previous one sucked, this one is a little better! ^_^)
+  - A better interactive test, (the previous one sucked, this one is a little
+    better! ^_^)
   - Other minor fixes
 
 0.02 01/08/2005 22:12:34

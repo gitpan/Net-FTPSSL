@@ -9,10 +9,10 @@
 
 use strict;
 
-use Test::More tests => 44;
+use Test::More tests => 50;
 use File::Copy;
 
-# plan tests => 43;  # Can't use due to BEGIN block
+# plan tests => 49;  # Can't use due to BEGIN block
 
 BEGIN { use_ok('Net::FTPSSL') }    # Test # 1
 
@@ -25,7 +25,7 @@ diag( "where the user has permissions to read and write." );
 my $more_test = ask_yesno("Do you want to make a deeper test");
 
 SKIP: {
-    skip "Deeper test skipped for some reason...", 43 unless $more_test;
+    skip "Deeper test skipped for some reason...", 49 unless $more_test;
 
     my( $address, $server, $port, $user, $pass, $dir, $mode, $data, $encrypt_mode ); 
 
@@ -79,12 +79,13 @@ SKIP: {
     # -----------------------------------------------------------
 
     my %callback_hash;
-    my $debug_log = "./t/BABY_new.txt";
+    my $debug_log1 = "./t/BABY_1_new.txt";
+    my $debug_log2 = "./t/BABY_2_new.txt";
 
     # Delete test files from previous run
     unlink ("./t/test_file_new.tar.gz",
             "./t/FTPSSL.pm_new.tst",
-            $log_file, $copy_file, $debug_log);
+            $log_file, $copy_file, $debug_log1, $debug_log2);
 
     # So we can save the Debug trace in a file from this test.
     # We don't use DebugLogFile for this on purpose so that everything
@@ -93,7 +94,7 @@ SKIP: {
     open (OLDERR, ">&STDERR");
     open (STDERR, "> $log_file");
 
-    print STDERR "\nNet-FTPSSL Version: " . $Net::FTPSSL::VERSION . "\n\n";
+    # print STDERR "\nNet-FTPSSL Version: " . $Net::FTPSSL::VERSION . "\n\n";
 
     # Leave SSL_Advanced commented out ... Unsupported feature ...
     my $ftp = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
@@ -101,7 +102,6 @@ SKIP: {
                                 useSSL => $encrypt_mode,
                                 # SSL_Advanced => \%advanced_hash,
                                 PreserveTimestamp => 1,
-                                # DebugLogFile => $debug_log,
                                 Debug => 1, Trace => 1, Croak => 1 );
 
     isa_ok( $ftp, 'Net::FTPSSL', 'Net::FTPSSL object creation' );
@@ -110,6 +110,30 @@ SKIP: {
 
     $dir = $ftp->pwd ()  unless $dir;   # Ask for HOME dir if not provided!
 
+    # -------------------------------------------------------------------------
+    # Just ignore these connections, just verifying it's not stealing log file.
+    # Must manually check the logs to be sure ...
+    # -------------------------------------------------------------------------
+    my $badftp1 = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
+                            DataProtLevel => $data, useSSL => $encrypt_mode,
+                            PreserveTimestamp => 0, DebugLogFile => $debug_log1,
+                            Debug => 1, Trace => 1, Croak => 1 );
+    my $badftp2 = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
+                            DataProtLevel => $data, useSSL => $encrypt_mode,
+                            PreserveTimestamp => 1, DebugLogFile => $debug_log2,
+                            Debug => 1, Trace => 1, Croak => 1 );
+    isa_ok( $badftp1, 'Net::FTPSSL', '2nd Net::FTPSSL object creation' );
+    isa_ok( $badftp2, 'Net::FTPSSL', '3rd Net::FTPSSL object creation' );
+    ok( $badftp1->login ($user, $pass), "2nd Login to $server" );
+    ok( $badftp2->login ($user, $pass), "3rd Login to $server" );
+    $badftp1->pwd ();
+    $badftp2->noop ();
+    $badftp1->quit ();
+    $badftp2->quit ();
+
+    # -------------------------------------------------------------------------
+    # Back to processing the real tests ...
+    # -------------------------------------------------------------------------
     ok( $ftp->cwd( $dir ), "Changed the dir to $dir" );
     my $pwd = $ftp->pwd();
     ok( defined $pwd, "Getting the directory: ($pwd)" );
@@ -158,7 +182,7 @@ SKIP: {
     # -----------------------------------------------
 
     # Check if timestamps are preserved via get/put commands ... (Both sides)
-    my $supported = ($ftp->supported ("MFMT") & $ftp->supported("MDTM"));
+    my $supported = ($ftp->supported ("MFMT") && $ftp->supported("MDTM"));
 
     ok( $ftp->put( './FTPSSL.pm' ), "puting a test ascii file on $dir" );
 
@@ -260,15 +284,20 @@ SKIP: {
 
     ok( $ftp->binary (), 'putting FTP back in binary mode' );
     ok( $ftp->get($file, './t/test_file_new.tar.gz'), 'retrieving the binary file' );
-    ok( $ftp->delete($file), "deleting the test bin file on $server" );
+    my $size = $ftp->size ($file);
+    my $original_size = -s './t/test_file.tar.gz';
+    ok ( defined $size, "The binary file's size via FTPS on $server was $size vs $original_size");
 
     # Now check out the before & after BINARY images
-    ok( -s './t/test_file.tar.gz' == -s './t/test_file_new.tar.gz',
+    ok( $original_size == -s './t/test_file_new.tar.gz',
         "Verifying BINARY file matches original size" );
+    ok( $original_size == $size,
+        "Verifying FTPS Server agreed with the sizes." );
     my $same_dates = (stat ('./t/test_file.tar.gz'))[9] == (stat ('./t/test_file_new.tar.gz'))[9];
     ok( (! $supported) || $same_dates,
-        $supported ? "The binary Timestamps were preserved!"
-                   : "Preserving Binary timestamps are not supported!" );
+        $supported ? "The binary file's Timestamp was preserved!"
+                   : "Preserving Binary file timestamps are not supported!" );
+    ok( $ftp->delete($file), "deleting the test bin file on $server" );
 
     ok( $ftp->ascii (), 'putting FTP back in ascii mode' );
     ok( $ftp->xget("FTPSSL.pm", './t/FTPSSL.pm_new.tst'), 'retrieving the ascii file again' );
@@ -285,7 +314,7 @@ SKIP: {
     $file = "delete_me_I_do_not_exist.txt";
     ok ( ! $ftp->get ($file), "Get a non-existant file!" );
     if (-f $file) {
-       my $size = -s $file;
+       $size = -s $file;
        unlink ($file);
        print STDERR " *** Deleted local file: $file  [$size byte(s)].\n";
     } else {
@@ -293,19 +322,24 @@ SKIP: {
     }
 
     # -----------------------------------------
+    # End put/get/rename/delete section ...
+    # -----------------------------------------
+
+    # -----------------------------------------
     # Clear the command channel, do limited work after this ...
+    # Add any new tests before this block ...
     # -----------------------------------------
     if ( ! $ftp->supported ("ccc") ) {
        ok ( $ftp->noop (), "Noop since CCC not supported on this server." );
-    } elsif ( $mode ne "C" ) {
-       ok ( $ftp->ccc (), "Clear Command Channel Test" );
+    } elsif ( $mode eq CLR_CRYPT ) {
+       ok ( $ftp->noop (), "Noop since CCC not supported using regular FTP." );
     } else {
-       ok ( $ftp->noop (), "Noop since CCC not supported in this mode." );
+       ok ( $ftp->ccc (), "Clear Command Channel Test" );
     }
     ok ( $ftp->pwd (), "Get Current Directory Again" );
 
     # -----------------------------------------
-    # End put/get/rename/delete section ...
+    # Closing the connection ...
     # -----------------------------------------
 
     $ftp->quit();

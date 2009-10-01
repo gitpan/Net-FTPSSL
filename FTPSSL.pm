@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : kral <kral at paranici dot org>
 # Created : 01 March 2005
-# Version : 0.11
+# Version : 0.12
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -19,7 +19,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.11";
+$VERSION = "0.12";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -53,6 +53,10 @@ use constant MODE_ASCII  => "A";
 
 use constant TRACE_MOD => 5;   # How many iterations between ".".  Must be >= 2.
 
+# Only used while the call to new() is in scope!
+my $FTPS_ERROR;
+
+
 sub new {
   my $self         = shift;
   my $type         = ref($self) || $self;
@@ -79,20 +83,26 @@ sub new {
   my $advanced     = (ref ($arg->{SSL_Advanced}) eq "HASH")
                                    ? $arg->{SSL_Advanced} : \%ssl_args;
 
-  # Determine where to write the Debug & Trace info to ...
+  # Determine where to write the Debug info to ...
   if ( $use_logfile ) {
      my $open_mode = ( $debug == 2 ) ? ">>" : ">";
      my $f = $arg->{DebugLogFile};
-     open ( FTPS_ERROR, "$open_mode $f" ) or
+     unlink ( $f )  if ( -f $f && $open_mode ne ">>" );
+     my $f_exists = (-f $f);
+     open ( $FTPS_ERROR, "$open_mode $f" ) or
                _croak_or_return (undef, 1, 0,
                                  "Can't create debug logfile: $f ($!)");
+     print $FTPS_ERROR "\nNet-FTPSSL Version: $VERSION\n\n"  unless ( $f_exists );
      $debug = 2;                  # Already know Debug is turned on ...
-  } else {
-     open ( FTPS_ERROR, ">&STDERR" ) or
-               _croak_or_return (undef, 1, 0,
-                              "Can't attach the debug logfile to STDERR. ($!)");
-     FTPS_ERROR->autoflush (1);
-     $debug = 1  if ( $debug );   # Force to a specific Debug value ...
+  } elsif ( $debug ) {
+     $debug = 1;                  # Force to a specific Debug value ...
+
+#    open ( $FTPS_ERROR, ">&STDERR" ) or
+#              _croak_or_return (undef, 1, 0,
+#                             "Can't attach the debug logfile to STDERR. ($!)");
+#    $FTPS_ERROR->autoflush (1);
+
+     print STDERR "\nNet-FTPSSL Version: $VERSION\n\n";
   }
 
   # Determines if we die if we will need to also write to the error log file ...
@@ -178,11 +188,6 @@ sub new {
      }
   }
 
-  # Print out the details of the SSL object.  Set to TRUE only for debugging!
-  if ( $debug && ref ($arg->{SSL_Advanced}) eq "HASH" ) {
-     $obj->_debug_print_hash ( $host, $port, $encrypt_mode );
-  }
-
   # These options control the behaviour of the Net::FTPSSL class ...
   ${*$obj}{Crypt}     = $encrypt_mode;
   ${*$obj}{debug}     = $debug;
@@ -193,6 +198,14 @@ sub new {
   ${*$obj}{data_prot} = $data_prot;
   ${*$obj}{Croak}     = $die;
   ${*$obj}{FixPutTs}  = ${*$obj}{FixGetTs} = $pres_ts;
+
+  ${*$obj}{ftpssl_filehandle} = $FTPS_ERROR  if ( $debug == 2 );
+  $FTPS_ERROR = undef;
+
+  # Print out the details of the SSL object.  Set to TRUE only for debugging!
+  if ( $debug && ref ($arg->{SSL_Advanced}) eq "HASH" ) {
+     $obj->_debug_print_hash ( $host, $port, $encrypt_mode );
+  }
 
   return $obj;
 }
@@ -224,6 +237,7 @@ sub quit {
   my $self = shift;
   $self->_quit() or return 0;   # Don't do a croak here, since who tests?
   $self->close();
+  $self->_close_LOG ()  if ( ${*$self}{debug} );
   return 1;
 }
 
@@ -239,7 +253,7 @@ sub pasv {
   $self->command("PASV");
 
   # my $msg = $self->getline();
-  # print FTPS_ERROR "<<< " . $msg if ${*$self}{debug};
+  # $self->_print_DBG ( "<<< " . $msg );
   # unless ( substr( $msg, 0, 1 ) == CMD_OK ) { return undef; }
 
   unless ( $self->response () == CMD_OK ) { return $self->_croak_or_return (); }
@@ -323,30 +337,29 @@ sub list {
   unless ( $nlst_flg ? $self->_nlst($path) : $self->_list($path) ) {
      $self->_croak_or_return ();
      return ();
-
-  } else {
-    my ( $tmp, $io, $size );
-
-    $size = ${*$self}{buf_size};
-
-    $io = $self->_get_data_channel ();
-    unless ( defined $io ) {
-       return ();   # Already decided not to call croak if you get here!
-    }
-
-    while ( my $len = sysread $io, $tmp, $size ) {
-      unless ( defined $len ) {
-        next if $! == EINTR;
-        my $type = $nlst_flg ? 'nlst()' : 'list()';
-        return $self->_croak_or_return (0, "System read error on read while $type: $!");
-      }
-      $dati .= $tmp;
-    }
-
-    $io->close();
-
-    $self->response ();    # For catch "226 Closing data connection."
   }
+
+  my ( $tmp, $io, $size );
+
+  $size = ${*$self}{buf_size};
+
+  $io = $self->_get_data_channel ();
+  unless ( defined $io ) {
+     return ();   # Already decided not to call croak if you get here!
+  }
+
+  while ( my $len = sysread $io, $tmp, $size ) {
+    unless ( defined $len ) {
+      next if $! == EINTR;
+      my $type = $nlst_flg ? 'nlst()' : 'list()';
+      return $self->_croak_or_return (0, "System read error on read while $type: $!");
+    }
+    $dati .= $tmp;
+  }
+
+  $io->close();
+
+  $self->response ();    # For catch "226 Closing data connection."
 
   # Convert to use local separators ...
   # Required for callback functionality ...
@@ -384,7 +397,7 @@ sub list {
         $pattern = '\s+(' . $pattern . ')($|\s+->\s+)';
      }
 
-     print FTPS_ERROR "PATTERN: <- $p => $pattern ->\n"  if ( ${*$self}{debug} );
+     $self->_print_DBG ( "PATTERN: <- $p => $pattern ->\n" );
 
      # Now only keep those files that match the pattern.
      my @res;
@@ -392,7 +405,6 @@ sub list {
         push (@res, $_)  if ( $_ =~ m/$pattern/i );
      }
      $dati = join ("\n", @res);
-
   }
 
   my $len = length ($dati);
@@ -462,110 +474,112 @@ sub get {
   my $cb_idx = ( defined $c && $c eq "Net::FTPSSL::xget" ) ? 2 : 1;
   my $func = ( $cb_idx == 1 ) ? "get" : "xget";
 
-  if ( $self->_retr($file_rem) ) {
-    my ( $data, $written, $io );
 
-    $io = $self->_get_data_channel ();
-    unless ( defined $io ) {
-       if ( $close_file ) {
-          close ($localfd);
-          unlink ($file_loc);
-       }
-       return undef;   # Already decided not to call croak if you get here!
-    }
+  # Check if the "get" failed ...
+  unless ( $self->_retr($file_rem) ) {
+     if ($close_file) {
+        close ($localfd);
+        unlink ($file_loc);
+     }
 
-    print STDERR "$func() trace ."  if (${*$self}{trace});
-    my $cnt = 0;
-    my $prev = "";
-    my $total = 0;
-    my $len;
-
-    while ( ( $len = sysread $io, $data, $size ) ) {
-      unless ( defined $len ) {
-        next if $! == EINTR;
-        return $self->_croak_or_return (0, "System read error on $func(): $!");
-      }
-
-      if ( $fix_cr_issue ) {
-         # What if the line only contained \015 ?  (^M)
-         if ( $data eq "\015" ) {
-            $prev .= "\015";
-            next;
-         }
-
-         # What if this line was truncated? (Ends with \015 instead of \015\012)
-         # Can't test with reg expr since m/(\015)$/s & m/(\015\012)$/s same!
-         # Don't care if it was truncated anywhere else!
-         my $last_char = substr ($data, -1);
-         if ( $last_char eq "\015" ) {
-            $data =~ s/^(.+).$/$prev$1/s;
-            $prev = $last_char;
-         }
-
-         # What if the previous line was truncated?  But not this one.
-         elsif ( $prev ne "" ) {
-            $data = $prev . $data;
-            $prev = "";
-         }
-
-         $data =~ s/\015\012/\n/g;
-         $len = length ($data);
-      }
-
-      print STDERR "."  if (${*$self}{trace} && ($cnt % TRACE_MOD) == 0);
-      ++$cnt;
-
-      $total = $self->_call_callback ($cb_idx, \$data, \$len, $total);
-
-      if ( $len > 0 ) {
-         $written = syswrite $localfd, $data, $len;
-         return $self->_croak_or_return (0, "System write error on $func(): $!")
-               unless (defined $written);
-      }
-    }
-
-    # Potentially write a last ASCII char to the file ...
-    if ($prev ne "") {
-      $len = length ($prev);
-      $total = $self->_call_callback ($cb_idx, \$prev, \$len, $total);
-      if ( $len > 0 ) {
-         $written = syswrite $localfd, $prev, $len;
-         return $self->_croak_or_return (0, "System write error on $func(prev): $!")
-               unless (defined $written);
-      }
-    }
-
-    # Process trailing "callback" info if returned.
-    my $trail;
-    ($trail, $len, $total) = $self->_end_callback ($cb_idx, $total);
-    if ( $trail ) {
-      $written = syswrite $localfd, $trail, $len;
-      return $self->_croak_or_return (0, "System write error on $func(trail): $!")
-            unless (defined $written);
-    }
-
-    print STDERR ". done! (" . $self->_fmt_num ($total) . " byte(s))\n"  if (${*$self}{trace});
-
-    $io->close();
-    $self->response();    # For catch "226 Closing data connection."
-
-    if ( $close_file ) {
-       close ($localfd);
-       if ( ${*$self}{FixGetTs} ) {
-          my $tm = $self->_mdtm ( $file_rem );
-          utime ( $tm, $tm, $file_loc )  if ( $tm );
-       }
-    }
-
-    return 1;
+     return $self->_croak_or_return ();
   }
 
-  if ($close_file) {
+  my ( $data, $written, $io );
+
+  $io = $self->_get_data_channel ();
+  unless ( defined $io ) {
+     if ( $close_file ) {
+        close ($localfd);
+        unlink ($file_loc);
+     }
+     return undef;   # Already decided not to call croak if you get here!
+  }
+
+  print STDERR "$func() trace ."  if (${*$self}{trace});
+  my $cnt = 0;
+  my $prev = "";
+  my $total = 0;
+  my $len;
+
+  while ( ( $len = sysread $io, $data, $size ) ) {
+    unless ( defined $len ) {
+      next if $! == EINTR;
+      return $self->_croak_or_return (0, "System read error on $func(): $!");
+    }
+
+    if ( $fix_cr_issue ) {
+       # What if the line only contained \015 ?  (^M)
+       if ( $data eq "\015" ) {
+          $prev .= "\015";
+          next;
+       }
+
+       # What if this line was truncated? (Ends with \015 instead of \015\012)
+       # Can't test with reg expr since m/(\015)$/s & m/(\015\012)$/s same!
+       # Don't care if it was truncated anywhere else!
+       my $last_char = substr ($data, -1);
+       if ( $last_char eq "\015" ) {
+          $data =~ s/^(.+).$/$prev$1/s;
+          $prev = $last_char;
+       }
+
+       # What if the previous line was truncated?  But not this one.
+       elsif ( $prev ne "" ) {
+          $data = $prev . $data;
+          $prev = "";
+       }
+
+       $data =~ s/\015\012/\n/g;
+       $len = length ($data);
+    }
+
+    print STDERR "."  if (${*$self}{trace} && ($cnt % TRACE_MOD) == 0);
+    ++$cnt;
+
+    $total = $self->_call_callback ($cb_idx, \$data, \$len, $total);
+
+    if ( $len > 0 ) {
+       $written = syswrite $localfd, $data, $len;
+       return $self->_croak_or_return (0, "System write error on $func(): $!")
+             unless (defined $written);
+    }
+  }
+
+  # Potentially write a last ASCII char to the file ...
+  if ($prev ne "") {
+    $len = length ($prev);
+    $total = $self->_call_callback ($cb_idx, \$prev, \$len, $total);
+    if ( $len > 0 ) {
+       $written = syswrite $localfd, $prev, $len;
+       return $self->_croak_or_return (0, "System write error on $func(prev): $!")
+             unless (defined $written);
+    }
+  }
+
+  # Process trailing "callback" info if returned.
+  my $trail;
+  ($trail, $len, $total) = $self->_end_callback ($cb_idx, $total);
+  if ( $trail ) {
+    $written = syswrite $localfd, $trail, $len;
+    return $self->_croak_or_return (0, "System write error on $func(trail): $!")
+          unless (defined $written);
+  }
+
+  print STDERR ". done! (" . $self->_fmt_num ($total) . " byte(s))\n"  if (${*$self}{trace});
+
+  $io->close();
+  $self->response();    # For catch "226 Closing data connection."
+
+  if ( $close_file ) {
      close ($localfd);
-     unlink ($file_loc);
+     if ( ${*$self}{FixGetTs} ) {
+        my $tm = $self->_mdtm ( $file_rem );
+        utime ( $tm, $tm, $file_loc )  if ( $tm );
+     }
   }
 
-  return $self->_croak_or_return ();
+  return 1;
 }
 
 
@@ -586,7 +600,7 @@ sub uput {              # Unique put (STOU command)
 
   # Now lets get the real name of the file generated!
   if ( $resp ) {
-    # The file name may appear in either message returned.
+    # The file name may appear in either message returned.  (The 150 or 226 msg)
     # So lets check both messages merged together!
     my $msg = $msg1 . "\n" . $msg2;
 
@@ -694,6 +708,11 @@ sub xput {              # A variant of the regular put (STOR command)
                               $self->_common_put ($file_loc, $scratch_name);
 
    if ( $resp ) {
+     # Delete any file sitting on the server with the final name we want to use
+     # to avoid file permission issues.  Usually the file won't exist so the
+     # delete will fail ...
+     $self->delete ( $file_rem );
+
      # Now lets make it visible to the file recognizer ...
      $resp = $self->rename ( $requested_file_name, $file_rem );
 
@@ -744,7 +763,8 @@ sub xget {              # A variant of the regular get (RETR command)
 
    # Make it visisble to the local file recognizer on success ...
    if ( $resp ) {
-      print FTPS_ERROR "<<+ renamed $scratch_name to $file_loc\n"  if (${*$self}{debug});
+      $self->_print_DBG ( "<<+ renamed $scratch_name to $file_loc\n" );
+      unlink ( $file_loc );    # To avoid potential permission issues ...
       move ( $scratch_name, $file_loc ) or
            return $self->_croak_or_return (0, "Can't rename the local scratch file!");
    }
@@ -766,7 +786,7 @@ sub _common_put {
 
   $size = ${*$self}{buf_size} || 2048;
 
-  if ( ref($file_loc) && ref($file_loc) eq "GLOB" ) {
+  if ( ref($file_loc) eq "GLOB" ) {
     $localfd = \*$file_loc;
     return $self->_croak_or_return (0, "When you pass a stream, you must specify the remote filename.")
          unless $file_rem;
@@ -776,10 +796,9 @@ sub _common_put {
       return $self->_croak_or_return (0, "Can't open local file! ($file_loc)");
     }
     $close_file = 1;
-  }
-
-  unless ($file_rem) {
-    $file_rem = basename($file_loc);
+    unless ($file_rem) {
+      $file_rem = basename($file_loc);
+    }
   }
 
   my $fix_cr_issue = 1;
@@ -797,7 +816,7 @@ sub _common_put {
 
   # If alloc_size is already set, I skip this part
   unless ( defined ${*$self}{alloc_size} ) {
-    if ( -f $file_loc ) {
+    if ( $close_file && -f $file_loc ) {
       my $size = -s $file_loc;
       $self->alloc($size);
     }
@@ -805,78 +824,77 @@ sub _common_put {
 
   delete ${*$self}{alloc_size};
 
-  if ( $func eq "uput" ? $self->_stou($file_rem) : $self->_stor($file_rem) ) {
-
-    my $put_msg = $self->last_message ();
-
-    my ( $data, $written, $io );
-
-    $io = $self->_get_data_channel ();
-    unless ( defined $io ) {
-       close ($localfd)  if ($close_file);
-       return undef;   # Already decided not to call croak if you get here!
-    }
-
-    print STDERR "$func() trace ."  if (${*$self}{trace});
-    my $cnt = 0;
-    my $total = 0;
-    my $len;
-
-    while ( ( $len = sysread $localfd, $data, $size ) ) {
-      unless ( defined $len ) {
-        next if $! == EINTR;
-        return $self->_croak_or_return (0, "System read error on $func(): $!");
-      }
-
-      $total = $self->_call_callback (2, \$data, \$len, $total);
-
-      if ($fix_cr_issue) {
-         $data =~ s/\n/\015\012/g;
-         $len = length ($data);
-      }
-
-      print STDERR "."  if (${*$self}{trace} && ($cnt % TRACE_MOD) == 0);
-      ++$cnt;
-
-      if ( $len > 0 ) {
-         $written = syswrite $io, $data, $len;
-         return $self->_croak_or_return (0, "System write error on $func(): $!")
-             unless (defined $written);
-      }
-    }
-
-    # Process trailing call back info if present.
-    my $trail;
-    ($trail, $len, $total) = $self->_end_callback (2, $total);
-    if ( $trail ) {
-      if ($fix_cr_issue) {
-         $trail =~ s/\n/\015\012/g;
-         $len = length ($trail);
-      }
-      $written = syswrite $io, $trail, $len;
-      return $self->_croak_or_return (0, "System write error on $func(): $!")
-          unless (defined $written);
-    }
-
-    print STDERR ". done! (" . $self->_fmt_num ($total) . " byte(s))\n"  if (${*$self}{trace});
-
-    my $tm;
-    if ($close_file) {
-       close ($localfd);
-       if ( ${*$self}{FixPutTs} ) {
-          $tm = (stat ($file_loc))[9];   # The local file's timestamp!
-       }
-    }
-
-    $io->close();
-    $self->response();    # For catch "226 Closing data connection."
-
-    return ( 1, $put_msg, $self->last_message (), $file_rem, $tm );
+  # If the "put" request fails ...
+  unless ( $func eq "uput" ? $self->_stou($file_rem) : $self->_stor($file_rem) ) {
+     close ($localfd)  if ($close_file);
+     return ( $self->_croak_or_return (), undef, undef, $file_rem, undef );
   }
 
-  close ($localfd)  if ($close_file);
+  my $put_msg = $self->last_message ();
 
-  return ( $self->_croak_or_return (), undef, undef, $file_rem, undef );
+  my ( $data, $written, $io );
+
+  $io = $self->_get_data_channel ();
+  unless ( defined $io ) {
+     close ($localfd)  if ($close_file);
+     return undef;   # Already decided not to call croak if you get here!
+  }
+
+  print STDERR "$func() trace ."  if (${*$self}{trace});
+  my $cnt = 0;
+  my $total = 0;
+  my $len;
+
+  while ( ( $len = sysread $localfd, $data, $size ) ) {
+    unless ( defined $len ) {
+      next if $! == EINTR;
+      return $self->_croak_or_return (0, "System read error on $func(): $!");
+    }
+
+    $total = $self->_call_callback (2, \$data, \$len, $total);
+
+    if ($fix_cr_issue) {
+       $data =~ s/\n/\015\012/g;
+       $len = length ($data);
+    }
+
+    print STDERR "."  if (${*$self}{trace} && ($cnt % TRACE_MOD) == 0);
+    ++$cnt;
+
+    if ( $len > 0 ) {
+       $written = syswrite $io, $data, $len;
+       return $self->_croak_or_return (0, "System write error on $func(): $!")
+           unless (defined $written);
+    }
+  }
+
+  # Process trailing call back info if present.
+  my $trail;
+  ($trail, $len, $total) = $self->_end_callback (2, $total);
+  if ( $trail ) {
+    if ($fix_cr_issue) {
+       $trail =~ s/\n/\015\012/g;
+       $len = length ($trail);
+    }
+    $written = syswrite $io, $trail, $len;
+    return $self->_croak_or_return (0, "System write error on $func(): $!")
+        unless (defined $written);
+  }
+
+  print STDERR ". done! (" . $self->_fmt_num ($total) . " byte(s))\n"  if (${*$self}{trace});
+
+  my $tm;
+  if ($close_file) {
+     close ($localfd);
+     if ( ${*$self}{FixPutTs} ) {
+        $tm = (stat ($file_loc))[9];   # The local file's timestamp!
+     }
+  }
+
+  $io->close();
+  $self->response();    # For catch "226 Closing data connection."
+
+  return ( 1, $put_msg, $self->last_message (), $file_rem, $tm );
 }
 
 # On some servers this command always fails!
@@ -1006,7 +1024,7 @@ sub supported {
       }
    }
 
-   print FTPS_ERROR "<<+ " . ${*$self}{last_ftp_msg} . "\n" if ${*$self}{debug};
+   $self->_print_DBG ( "<<+ " . ${*$self}{last_ftp_msg} . "\n" );
 
    return ($result);
 }
@@ -1083,7 +1101,7 @@ sub quot {
       ${*$self}{last_ftp_msg} = "x22 Data Connections are not supported via " .
                                 "quot().  [$cmd]";
       substr (${*$self}{last_ftp_msg}, 0, 1) = CMD_REJECT;
-      print FTPS_ERROR "<<+ " . ${*$self}{last_ftp_msg} . "\n" if ${*$self}{debug};
+      $self->_print_DBG ( "<<+ " . ${*$self}{last_ftp_msg} . "\n" );
       return (CMD_REJECT);
    }
 
@@ -1091,7 +1109,7 @@ sub quot {
    if ( $cmd eq "CCC" ) {
       ${*$self}{last_ftp_msg} = "x22 Why didn't you call CCC directly?";
       substr (${*$self}{last_ftp_msg}, 0, 1) = CMD_REJECT;
-      print FTPS_ERROR "<<+ " . ${*$self}{last_ftp_msg} . "\n" if ${*$self}{debug};
+      $self->_print_DBG ( "<<+ " . ${*$self}{last_ftp_msg} . "\n" );
       return (CMD_REJECT);
    }
 
@@ -1226,6 +1244,12 @@ sub _rnto {
   return ( $self->response == CMD_OK );
 }
 
+sub mfmt {
+  my $self = shift;
+  $self->command( "MFMT", @_ );
+  return ( $self->_test_croak ($self->response () == CMD_OK) );
+}
+
 sub _mfmt {
   my $self = shift;
   my $timestamp = shift;  # (stat ($loc_file))[9] - The local file's timestamp!
@@ -1241,15 +1265,31 @@ sub _mfmt {
   return ( $self->response () == CMD_OK );
 }
 
+sub mdtm {
+  my $self = shift;
+
+  my $gmt_time_str;
+
+  $self->command( "MDTM", @_ );
+
+  if ( $self->response () == CMD_OK &&
+       ${*$self}{last_ftp_msg} =~ m/(^|\D)(\d{14})($|\D)/ ) {
+    $gmt_time_str = $2;   # The timestamp on the remote server: YYYYMMDDHHMMSS.
+  }
+
+  return ( $self->_test_croak ($gmt_time_str) );  # In GMT time ...
+}
+
 sub _mdtm {
   my $self = shift;
+
   my $timestamp;
 
   $self->command( "MDTM", @_ );
 
   if ( $self->response () == CMD_OK &&
        ${*$self}{last_ftp_msg} =~ m/(^|\D)(\d{14})($|\D)/ ) {
-    my $time_str = $2;   # The timestamp on the remote server: YYYYMMDDHHMMSS.
+    my $time_str = $2;    # The timestamp on the remote server: YYYYMMDDHHMMSS.
 
     # Now convert it into the internal format used by Perl ...
     $time_str =~ m/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/;
@@ -1260,6 +1300,19 @@ sub _mdtm {
   }
 
   return ( $timestamp );
+}
+
+sub size {
+  my $self = shift;
+
+  $self->command( "SIZE", @_ );
+
+  if ( $self->response () == CMD_OK &&
+       ${*$self}{last_ftp_msg} =~ m/\d+\s+(\d+)($|\D)/ ) {
+        return ( $1 );   # The size in bytes!  May be zero!
+  }
+
+  return ( $self->_test_croak (undef) );
 }
 
 #-----------------------------------------------------------------------
@@ -1403,7 +1456,7 @@ sub _croak_or_return {
       my $should_we_print = shift;
       $ERRSTR = shift || "Unknown Error";
 
-      print FTPS_ERROR "<<+ $err " . $ERRSTR . "\n" if ( $should_we_print );
+      _print_LOG ( undef, "<<+ $err " . $ERRSTR . "\n" ) if ( $should_we_print );
       croak ( $ERRSTR . "\n" )   if ( $should_we_die );
 
    } else {
@@ -1433,7 +1486,7 @@ sub _croak_or_return {
          # Only do if writing the message to the error log file ...
          if ( defined $replace_mode && uc ($msg) ne "" &&
               ${*$self}{debug} == 2 ) {
-            print FTPS_ERROR "<<+ $err " . $msg . "\n";
+            _print_LOG ( $self, "<<+ $err " . $msg . "\n" );
          }
 
          croak ( $ERRSTR . "\n" );
@@ -1441,7 +1494,7 @@ sub _croak_or_return {
 
       # Handles both cases of writing to STDERR or the error log file ...
       if ( defined $replace_mode && uc ($msg) ne "" && ${*$self}{debug} ) {
-         print FTPS_ERROR "<<+ $err " . $msg . "\n";
+         _print_LOG ( $self, "<<+ $err " . $msg . "\n" );
       }
    }
 
@@ -1450,6 +1503,8 @@ sub _croak_or_return {
 
 #-----------------------------------------------------------------------
 #  Messages handler
+# -----------------------------------------------------------------------------
+# Called by both Net::FTPSSL and IO::Socket::INET classes.
 #-----------------------------------------------------------------------
 
 sub command {
@@ -1471,9 +1526,9 @@ sub command {
   if ( ${*$self}{debug} ) {
      my $prefix = ( ref($self) eq "Net::FTPSSL" ) ? ">>> " : "SKT >>> ";
      if ( $data =~ m/^PASS\s/ ) {
-        print FTPS_ERROR $prefix . "PASS *******\n";   # Don't echo passwords
+        _print_LOG ( $self, $prefix . "PASS *******\n" );   # Don't echo passwords
      } else {
-        print FTPS_ERROR $prefix . $data . "\n";       # Echo everything else
+        _print_LOG ( $self, $prefix . $data . "\n" );       # Echo everything else
      }
   }
 
@@ -1503,6 +1558,8 @@ sub command {
 #     (And will probably hang the next time response() is called.)
 # So far the only thing I haven't seen is a call to sysread() returning a
 # partial response!
+# -----------------------------------------------------------------------------
+# Called by both Net::FTPSSL and IO::Socket::INET classes.
 # -----------------------------------------------------------------------------
 sub response {
   my $self = shift;
@@ -1538,7 +1595,7 @@ sub response {
      foreach my $line ( @lines ) {
        if ( $remember ) {
           # Continuing to save the next response for next time ...
-          print FTPS_ERROR "Saving rest of the next response! ($line)\n"  if ${*$self}{debug};
+          _print_LOG ( $self, "Saving rest of the next response! ($line)\n" ) if ${*$self}{debug};
           ${*$self}{next_ftp_msg} .= "\015\012" . $line;
           next;
        }
@@ -1552,7 +1609,7 @@ sub response {
 
        if ( $done && defined $sep ) {
           # We read past the end of the current response into the next one ...
-          print FTPS_ERROR "Attempted to read past end of response! ($line)\n"   if ${*$self}{debug};
+          _print_LOG ( $self, "Attempted to read past end of response! ($line)\n" ) if ${*$self}{debug};
           ${*$self}{next_ftp_msg} = $line;
           $remember = 1;
           $code = $last_code;
@@ -1560,7 +1617,7 @@ sub response {
        }
        $code = $last_code  unless ( defined $code );
 
-       print FTPS_ERROR $prefix . $line . "\n"   if ${*$self}{debug};
+       _print_LOG ( $self, $prefix . $line . "\n" ) if ${*$self}{debug};
 
        ${*$self}{last_ftp_msg} .= "\n" if ($done);
 
@@ -1698,9 +1755,9 @@ sub _debug_print_hash
    my $port = shift;
    my $mode = shift;
 
-   print FTPS_ERROR "\nObject SSL Details ...";
-   print FTPS_ERROR " ($host:$port - $mode)"  if (defined $host);
-   print FTPS_ERROR "\n";
+   $self->_print_LOG ( "\nObject SSL Details ..." );
+   $self->_print_LOG ( " ($host:$port - $mode)" )  if (defined $host);
+   $self->_print_LOG ( "\n" );
 
    foreach (keys %{*$self}) {
       if ( ! defined $host ) {
@@ -1709,19 +1766,60 @@ sub _debug_print_hash
       my $x = ${*$self}{$_};
       $x="(undef)" unless (defined $x);
       $x = join ("\n         ", split (/\n/, $x))  if (! ref($x));
-      print FTPS_ERROR "  $_ ==> $x\n";
+      $self->_print_LOG ( "  $_ ==> $x\n" );
       if ($x =~ m/HASH\(0/) {
          foreach (keys %{$x}) {
-            my $y = $x->{$_};
-            $y="(undef)" unless (defined $y);
-            $y = join ("\n                   ", split (/\n/, $y)) if (! ref($y));
-            print FTPS_ERROR "        -- $_ ===> $y\n";
+           my $y = $x->{$_};
+           $y="(undef)" unless (defined $y);
+           $y = join ("\n                   ", split (/\n/, $y)) if (! ref($y));
+           $self->_print_LOG ( "        -- $_ ===> $y\n" );
          }
       }
    }
-   print FTPS_ERROR "\n";
+   $self->_print_LOG ( "\n" );
 
    return;
+}
+
+#-----------------------------------------------------------------------
+# Provided so each class instance gets its own log file to write to.
+#-----------------------------------------------------------------------
+# Always writes to the log when called ...
+sub _print_LOG
+{
+   my $self = shift;
+   my $msg = shift;
+
+   if ( defined $self && exists ${*$self}{ftpssl_filehandle} ) {
+      my $FILE = ${*$self}{ftpssl_filehandle};
+      print $FILE $msg;          # Write to file ...
+   } elsif ( defined $FTPS_ERROR ) {
+      print $FTPS_ERROR $msg;    # Write to file when called during new() ...
+   } else {
+      print STDERR $msg;         # Write to screen anyone ?
+   }
+}
+
+# Only write to the log if debug is turned on ...
+# So we don't have to test everywhere ...
+sub _print_DBG
+{
+   my $self = shift;
+   if ( defined $self && ${*$self}{debug} ) {
+     $self->_print_LOG ( @_ );   # Only if debug is turned on ...
+   }
+}
+
+sub _close_LOG
+{
+  my $self = shift; 
+
+  if ( defined $self && exists ${*$self}{ftpssl_filehandle} ) {
+     my $FILE = ${*$self}{ftpssl_filehandle};
+     close ($FILE);
+     delete ( ${*$self}{ftpssl_filehandle} );
+     # ${*$self}{debug} = 1;
+  }
 }
 
 #-----------------------------------------------------------------------
@@ -1734,7 +1832,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.11
+=head1 VERSION 0.12
 
 =head1 SYNOPSIS
 
@@ -1749,9 +1847,9 @@ Net::FTPSSL - A FTP over SSL/TLS class
   $ftps->login('anonymous', 'user@localhost') 
     or die "Can't login: ", $ftps->last_message();
 
-  $ftps->cwd("/pub") or die "Can't change directory: " . $ftps->last_message;
+  $ftps->cwd("/pub") or die "Can't change directory: " . $ftps->last_message();
 
-  $ftps->get("file") or die "Can't get file: " . $ftps->last_message;
+  $ftps->get("file") or die "Can't get file: " . $ftps->last_message();
 
   $ftps->quit();
 
@@ -1811,15 +1909,16 @@ file's timestamp.  By default it will not preserve the timestamps.
 B<Buffer> - This is the block size that Net::FTPSSL will use when a transfer is
 made. Default value is 10240.
 
-B<Debug> - This turns the debug tracing option on/off. Default is off. (0,1,2)
-
 B<Trace> - Turns on/off put/get download tracing to STDERR.  Default is off.
+
+B<Debug> - This turns the debug tracing option on/off. Default is off. (0,1,2)
 
 B<DebugLogFile> - Redirects the output of B<Debug> from F<STDERR> to the
 requested error log file name.  This option is ignored unless B<Debug> is also
 turned on.  Enforced this way for backwards compatability.  If B<Debug> is set
 to B<2>, the log file will be opened in I<append> mode instead of creating a
-new log file.
+new log file.  This file is closed when I<quit> is called and B<Debug> messages
+go back to F<STDERR> again afterwards.
 
 B<Croak> - Force most methods to call I<croak()> on failure instead of returning
 I<FALSE>.  The default is to return I<FALSE> or I<undef> on failure.  When it
@@ -1847,7 +1946,12 @@ option.
 
 =item login( USER, PASSWORD )
 
-Use the given information to log into the FTP server.
+Use the given information to log into the FTPS server.
+
+=item quit()
+
+This method breaks the connection to the FTPS server.  It will also close the
+file pointed to by option I<DebugLogFile>.
 
 =item list( [DIRECTORY [, PATTERN]] )
 
@@ -1863,11 +1967,10 @@ If I<DIRECTORY> is omitted, the method will return the list of the current
 directory.
 
 If I<PATTERN> is provided, it would limit the result similar to the unix I<ls>
-command and the Windows Command Window I<dir> command.  The only wild cards
-supported are B<*> and B<?>.  (Match 0 or more chars.  Or any one char.)
-So a pattern of I<f*>, I<?oo> or I<FOO> would find just I<foo> from the list
-above.  Files with spaces in their name can cause strange results when searching
-for a pattern.
+command or the Windows I<dir> command.  The only wild cards supported are
+B<*> and B<?>.  (Match 0 or more chars.  Or any one char.) So a pattern of
+I<f*>, I<?Oo> or I<FOO> would find just I<foo> from the list above.  Files with
+spaces in their name can cause strange results when searching for a pattern.
 
 =item nlst( [DIRECTORY [, PATTERN]] )
 
@@ -1877,7 +1980,8 @@ Same as C<list> but returns the list in this format:
  pub
  bar
 
-Personally, I suggest using list instead of nlst.
+Spaces in the filename do not cause problems with the I<PATTERN> with C<nlst>.
+Personally, I suggest using nlst instead of list.
 
 =item ascii()
 
@@ -1910,7 +2014,7 @@ I<LOCAL_FILE>.
 
 Stores the I<LOCAL_FILE> onto the remote ftp server. I<LOCAL_FILE> may be a
 filehandle, but in this case I<REMOTE_FILE> is required.  If I<REMOTE_FILE>
-already exists on the ftp server, a unique name is calculated for use instead.
+already exists on the ftps server, a unique name is calculated for use instead.
 
 If the file transfer succeeds, this function will return the actual name used
 on the remote ftps server.  If it can't figure that out, it will return what
@@ -1975,23 +2079,26 @@ Deletes the indicated I<REMOTE_FILE>.
 
 =item cwd( DIR )
 
-Attempts to change directory to the directory given in I<DIR>.
+Attempts to change directory to the directory given in I<DIR> on the remote
+server.
 
 =item pwd()
 
-Returns the full pathname of the current directory.
+Returns the full pathname of the current directory on the remote server.
 
 =item cdup()
 
-Changes directory to the parent of the current directory.
+Changes directory to the parent of the current directory on the remote server.
 
 =item mkdir( DIR )
 
-Creates the indicated directory I<DIR>. No recursion at the moment.
+Creates the indicated directory I<DIR> on the remote server. No recursion at
+the moment.
 
 =item rmdir( DIR )
 
-Removes the empty indicated directory I<DIR>. No recursion at the moment.
+Removes the empty indicated directory I<DIR> on the remote server. No recursion
+at the moment.
 
 =item noop()
 
@@ -1999,7 +2106,7 @@ It specifies no action other than the server send an OK reply.
 
 =item rename( OLD, NEW )
 
-Allows you to rename the file on the server.
+Allows you to rename the file on the remote server.
 
 =item ccc( [ DataProtLevel ] )
 
@@ -2007,8 +2114,8 @@ Sends the clear command channel request to the FTPS server.  If you provide the
 I<DataProtLevel>, it will change it from the current data protection level to
 this one before it sends the B<CCC> command.  After the B<CCC> command, the
 data channel protection level can not be changed again and will always remain
-at this setting.  Also once you execute the B<CCC> request, you will have to
-create a new I<Net::FTPSSL> object to secure the command channel again.  I<Due
+at this setting.  Once you execute the B<CCC> request, you will have to create
+a new I<Net::FTPSSL> object to secure the command channel again.  I<Due
 to security concerns it is recommended that you do not use this method.>
 
 If the version of I<IO::Socket::SSL> you have installed is too old, this
@@ -2021,6 +2128,34 @@ function breaks on earlier releases.
 
 Send a SITE command to the remote server and wait for a response.
 
+=item mfmt( time_str, remote_file ) or _mfmt( timestamp, remote_file )
+
+Both are boolean functions that attempt to reset the remote file's timestamp on
+the FTPS server and returns true on success.  The 1st version can call croak on
+failure if I<Croak> is turned on, while the 2nd version will not do this.  The
+other difference between these two functions is the format of the file's
+timestamp to use.
+
+I<time_str> expects the timestamp to be GMT time in format I<YYYYMMDDHHMMSS>.
+While I<timestamp> expects to be in the same format as returned by
+I<localtime()>.
+
+=item mdtm( remote_file )  or  _mdtm( remote_file )
+
+The 1st version returns the file's timestamp as a string in I<YYYYMMDDHHMMSS>
+format using GMT time, it will return I<undef> or call croak on failure.
+
+The 2nd version returns the file's timestamp in the same format as returned by
+I<localtime()> and will never call croak.
+
+=item size( remote_file )
+
+This function will return I<undef> or croak on failure.  Otherwise it will
+return the file's size in bytes, which may also be zero bytes!  Just be aware
+for text files that the size returned may not match the file's actual size when
+the file is downloaded to your system in I<ASCII> mode.  This is an OS specific
+issue.  It will always match if you are using I<BINARY> mode.
+
 =item supported( CMD [,SITE_OPT] )
 
 Returns TRUE if the remote server supports the given command.  I<CMD> must match
@@ -2031,7 +2166,8 @@ support the use of I<SITE_OPT>.  This function ignores the B<Croak> request.
 =item quot( CMD [,ARGS] )
 
 Send a command, that Net::FTPSSL does not directly support, to the remote
-server and wait for a response.
+server and wait for a response.  You are responsible for parsing anything
+you need from I<message()> yourself.
 
 Returns the most significant digit of the response code.  So it will ignore
 the B<Croak> request.
@@ -2047,7 +2183,9 @@ same response printed to I<STDERR> when Debug is turned on.  It may also contain
 any fatal error message encountered.
 
 If you couldn't create a I<Net::FTPSSL> object, you should get your error
-message from I<$Net::FTPSSL::ERRSTR> instead.
+message from I<$Net::FTPSSL::ERRSTR> instead.  Be careful since
+I<$Net::FTPSSL::ERRSTR> is shared between instances of I<Net::FTPSSL>, while
+I<message> & I<last_message> B<are not> shared between instances!
 
 =item last_status_code()
 
@@ -2127,23 +2265,21 @@ function.
 
 =back
 
-=head1 AUTHOR
+=head1 AUTHORS
 
 Marco Dalla Stella - <kral at paranoici dot org>
 
-=head1 MAINTAINER
-
-Curtis Leach - As of v0.05
+Curtis Leach - <cleach at cpan dot org> - As of v0.05
 
 =head1 SEE ALSO
 
-L<Net::Cmd>
+I<Net::Cmd>
 
-L<Net::FTP>
+I<Net::FTP>
 
-L<Net::SSLeay::Handle>
+I<Net::SSLeay::Handle>
 
-L<IO::Socket::SSL>
+I<IO::Socket::SSL>
 
 RFC 959 - L<ftp://ftp.rfc-editor.org/in-notes/rfc959.txt>
 
@@ -2158,10 +2294,11 @@ collection of modules (libnet).
 
 =head1 BUGS
 
-I'm currently testing the module with proftpd and Titan FTP. I'm having a lot
-of trouble with the second at the moment. Put or get phases seem to work ok
-(sysread and syswrite don't return any errors) but the server doesn't receive
-all the sent data. I'm working on it.
+Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
+and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.12/FTPSSL.pm>.
+
+Patches are appreciated when a log file and sample code are also provided.
 
 =head1 COPYRIGHT
 
