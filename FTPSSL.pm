@@ -1,13 +1,18 @@
 # File    : Net::FTPSSL
 # Author  : kral <kral at paranici dot org>
 # Created : 01 March 2005
-# Version : 0.12
+# Version : 0.14
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
 
 use strict;
 use warnings;
+
+# Enforce a minimum version of this module or Net::FTPSSL hangs!
+# If you plan on using ccc(), the minimum should be v1.18 instead!
+use IO::Socket::SSL 1.08;
+
 use vars qw( $VERSION @EXPORT $ERRSTR );
 use base ( 'Exporter', 'IO::Socket::SSL' );
 use IO::Socket::INET;
@@ -19,7 +24,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.12";
+$VERSION = "0.14";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -92,7 +97,10 @@ sub new {
      open ( $FTPS_ERROR, "$open_mode $f" ) or
                _croak_or_return (undef, 1, 0,
                                  "Can't create debug logfile: $f ($!)");
-     print $FTPS_ERROR "\nNet-FTPSSL Version: $VERSION\n\n"  unless ( $f_exists );
+     unless ( $f_exists ) {
+        print $FTPS_ERROR "\nNet-FTPSSL Version: $VERSION\n\n";
+        print $FTPS_ERROR "Server (port): $host ($port)\n\n";
+     }
      $debug = 2;                  # Already know Debug is turned on ...
   } elsif ( $debug ) {
      $debug = 1;                  # Force to a specific Debug value ...
@@ -103,6 +111,7 @@ sub new {
 #    $FTPS_ERROR->autoflush (1);
 
      print STDERR "\nNet-FTPSSL Version: $VERSION\n\n";
+     print STDERR "Server (port): $host ($port)\n\n";
   }
 
   # Determines if we die if we will need to also write to the error log file ...
@@ -352,14 +361,19 @@ sub list {
     unless ( defined $len ) {
       next if $! == EINTR;
       my $type = $nlst_flg ? 'nlst()' : 'list()';
-      return $self->_croak_or_return (0, "System read error on read while $type: $!");
+      $self->_croak_or_return (0, "System read error on read while $type: $!");
+      return ();
     }
     $dati .= $tmp;
   }
 
   $io->close();
 
-  $self->response ();    # For catch "226 Closing data connection."
+  # To catch the expected "226 Closing data connection."
+  if ( $self->response() != CMD_OK ) {
+     $self->_croak_or_return ();
+     return ();
+  }
 
   # Convert to use local separators ...
   # Required for callback functionality ...
@@ -505,6 +519,7 @@ sub get {
   while ( ( $len = sysread $io, $data, $size ) ) {
     unless ( defined $len ) {
       next if $! == EINTR;
+      close ($localfd)  if ( $close_file );
       return $self->_croak_or_return (0, "System read error on $func(): $!");
     }
 
@@ -569,7 +584,12 @@ sub get {
   print STDERR ". done! (" . $self->_fmt_num ($total) . " byte(s))\n"  if (${*$self}{trace});
 
   $io->close();
-  $self->response();    # For catch "226 Closing data connection."
+
+  # To catch the expected "226 Closing data connection."
+  if ( $self->response() != CMD_OK ) {
+     close ($localfd)  if ( $close_file );
+     return $self->_croak_or_return ();
+  }
 
   if ( $close_file ) {
      close ($localfd);
@@ -892,13 +912,16 @@ sub _common_put {
   }
 
   $io->close();
-  $self->response();    # For catch "226 Closing data connection."
+
+  # To catch the expected "226 Closing data connection."
+  if ( $self->response() != CMD_OK ) {
+     return $self->_croak_or_return ();
+  }
 
   return ( 1, $put_msg, $self->last_message (), $file_rem, $tm );
 }
 
-# On some servers this command always fails!
-# So no croak test!
+# On some servers this command always fails!  So no croak test!
 sub alloc {
   my $self = shift;
   my $size = shift;
@@ -1393,6 +1416,7 @@ sub _help {
 
 #-----------------------------------------------------------------------
 #  Enable/Disable the Croak logic!
+#  Returns the previous Croak setting!
 #-----------------------------------------------------------------------
 
 sub set_croak {
@@ -1561,6 +1585,8 @@ sub command {
 # -----------------------------------------------------------------------------
 # Called by both Net::FTPSSL and IO::Socket::INET classes.
 # -----------------------------------------------------------------------------
+# Returns a single digit response code! (The CMD_* constants!)
+# -----------------------------------------------------------------------------
 sub response {
   my $self = shift;
   my ( $data, $code, $sep, $desc ) = ( "", CMD_ERROR, "-", "" );
@@ -1634,7 +1660,7 @@ sub response {
      }
   }
 
-  return substr( $code, 0, 1 );
+  return substr( $code, 0, 1 );     # The 1st digit of the code!
 }
 
 sub last_message {
@@ -1832,7 +1858,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.12
+=head1 VERSION 0.14
 
 =head1 SYNOPSIS
 
@@ -2121,8 +2147,7 @@ to security concerns it is recommended that you do not use this method.>
 If the version of I<IO::Socket::SSL> you have installed is too old, this
 function will not work since I<stop_SSL> won't be defined (like in v1.08).  So 
 it is recommended that you be on at least I<version 1.18> or later if you plan
-on using this function.  A minimum release isn't required since only this
-function breaks on earlier releases.
+on using this function.
 
 =item site( ARGS )
 
@@ -2296,7 +2321,7 @@ collection of modules (libnet).
 
 Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
 and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
-L<http://search.cpan.org/~cleach/Net-FTPSSL-0.12/FTPSSL.pm>.
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.14/FTPSSL.pm>.
 
 Patches are appreciated when a log file and sample code are also provided.
 
@@ -2304,7 +2329,7 @@ Patches are appreciated when a log file and sample code are also provided.
 
 Copyright (c) 2005 Marco Dalla Stella. All rights reserved.
 
-Copyright (c) 2009 Curtis Leach. All rights reserved.
+Copyright (c) 2009, 2010 Curtis Leach. All rights reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the same terms as Perl itself.

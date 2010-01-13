@@ -2,6 +2,22 @@ Revision history for Perl extension Net::FTPSSL.
 
 Version - YYYY/MM/DD
 --------------------
+0.14 2010/01/04 08:30:00
+  - Added minimum requirement of IO::Socket::SSL v1.08, since I just got word
+    that v0.97 caused Net-FTPSSL to hang!  And v1.08 was the release I
+    originally developed Net::FTPSSL with & is easily available for Windows
+    users as a pre-built release. But that release is still pretty old.
+    (IO::Socket::SSL is currently at v1.31 as of this writting.)
+  - Fixed bug in _common_put() where it didn't actually test the final status
+    message when closing the data connection.  So missed a rare failure case.
+  - Fixed similar bugs in list() & get() as well.
+  - Caught more list() & nlst() error conditions that returned undef instead of
+    the empty list as documented.
+  - Added the Server/Port to start of trace file after the version # since not
+    all servers returned this info in their log messagse.
+
+0.13 2009/11/01 08:30:00
+  - Decided to skip unlucky release # 13!
 
 0.12 2009/09/29 08:30:00
   - Made some POD changes.
