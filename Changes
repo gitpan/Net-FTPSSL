@@ -2,6 +2,19 @@ Revision history for Perl extension Net::FTPSSL.
 
 Version - YYYY/MM/DD
 --------------------
+0.15 2010/04/27 08:30:00
+  - Fixes for Bug Id 53719.  Requested all internal calls to "ALLO" be
+    conditional since some server connectins die when it receives an "ALLO"
+    command.
+  - Fixing the above bug uncovered an infinite loop if Croak was also turned on.
+    Now _croak_or_return() doesn't try to close the connection if called by
+    command() or response() or if recursion was detected.
+  - Fixed quot() to no longer upshift the command to upper case.  Discovered
+    case where lower case was required.  So it's now up the the caller to
+    put in upper case if it's required!  Also no longer checkes if the command
+    is valid according to HELP.  Some servers attempt to be sneeky by not
+    advertising all available commands.
+
 0.14 2010/01/04 08:30:00
   - Added minimum requirement of IO::Socket::SSL v1.08, since I just got word
     that v0.97 caused Net-FTPSSL to hang!  And v1.08 was the release I

@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : kral <kral at paranici dot org>
 # Created : 01 March 2005
-# Version : 0.14
+# Version : 0.15
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -24,7 +24,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.14";
+$VERSION = "0.15";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -922,11 +922,13 @@ sub _common_put {
 }
 
 # On some servers this command always fails!  So no croak test!
+# It's also why supported gets called.
 sub alloc {
   my $self = shift;
   my $size = shift;
 
-  if ( $self->_alloc($size) ) {
+  if ( $self->supported ("ALLO") &&
+       $self->_alloc($size) ) {
     ${*$self}{alloc_size} = $size;
   }
   else {
@@ -1107,29 +1109,28 @@ sub ccc {
 
 # Allow the user to send a FTP command directly, BE CAREFUL !!
 # Since doing unsupported stuff, we can never call croak!
+# Also not all unsupported stuff will show up in supported().
 
 sub quot {
    my $self = shift;
-   my $cmd  = uc (shift);
+   my $cmd  = shift;
 
-   unless ( $self->supported ($cmd) ) {
-      substr (${*$self}{last_ftp_msg}, 0, 1) = CMD_REJECT;
-      return (CMD_REJECT);
-   }
+   my $cmd2  = uc ($cmd);
+   $cmd2 = $1  if ( $cmd2 =~ m/^\s*(\S+)(\s|$)/ );
 
    # The following FTP commands are known to open a data channel
-   if ( $cmd eq "STOR" || $cmd eq "RETR" ||
-        $cmd eq "NLST" || $cmd eq "LIST" ||
-        $cmd eq "STOU" || $cmd eq "APPE" ) {
+   if ( $cmd2 eq "STOR" || $cmd2 eq "RETR" ||
+        $cmd2 eq "NLST" || $cmd2 eq "LIST" ||
+        $cmd2 eq "STOU" || $cmd2 eq "APPE" ) {
       ${*$self}{last_ftp_msg} = "x22 Data Connections are not supported via " .
-                                "quot().  [$cmd]";
+                                "quot().  [$cmd2]";
       substr (${*$self}{last_ftp_msg}, 0, 1) = CMD_REJECT;
       $self->_print_DBG ( "<<+ " . ${*$self}{last_ftp_msg} . "\n" );
       return (CMD_REJECT);
    }
 
    # You must call CCC directly, not through this add hock method ...
-   if ( $cmd eq "CCC" ) {
+   if ( $cmd2 eq "CCC" ) {
       ${*$self}{last_ftp_msg} = "x22 Why didn't you call CCC directly?";
       substr (${*$self}{last_ftp_msg}, 0, 1) = CMD_REJECT;
       $self->_print_DBG ( "<<+ " . ${*$self}{last_ftp_msg} . "\n" );
@@ -1500,7 +1501,15 @@ sub _croak_or_return {
       }
 
       if ( ${*$self}{Croak} ) {
-         if ( ref($self) eq "Net::FTPSSL" ) {
+         my $c = (caller(1))[3];
+         $c = ""  unless (defined $c);
+
+         # Trying to prevent infinite recursion ...
+         if ( ref($self) eq "Net::FTPSSL" &&
+                    (! exists ${*$self}{recursion}) &&
+                    $c ne "Net::FTPSSL::command" &&
+                    $c ne "Net::FTPSSL::response" ) {
+            ${*$self}{recursion} = "TRUE";
             my $tmp = ${*$self}{last_ftp_msg};
             $self->_abort ();
             $self->quit ();
@@ -1858,7 +1867,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.14
+=head1 VERSION 0.15
 
 =head1 SYNOPSIS
 
@@ -2321,7 +2330,7 @@ collection of modules (libnet).
 
 Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
 and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
-L<http://search.cpan.org/~cleach/Net-FTPSSL-0.14/FTPSSL.pm>.
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.15/FTPSSL.pm>.
 
 Patches are appreciated when a log file and sample code are also provided.
 
