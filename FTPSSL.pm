@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : kral <kral at paranici dot org>
 # Created : 01 March 2005
-# Version : 0.15
+# Version : 0.16
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -24,7 +24,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.15";
+$VERSION = "0.16";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -54,8 +54,19 @@ use constant CMD_PENDING => 0;
 
 # File transfer modes
 use constant MODE_BINARY => "I";
-use constant MODE_ASCII  => "A";
+use constant MODE_ASCII  => "A";   # Default
 
+# The Data Connection Setup Commands ...
+# Passive Options ... (All pasive modes are currently supported)
+use constant FTPS_PASV   => 1;    # Default mode ...
+use constant FTPS_EPSV_1 => 2;    # EPSV 1 - Internet Protocol Version 4
+use constant FTPS_EPSV_2 => 3;    # EPSV 2 - Internet Protocol Version 6
+# Active Options ... (No active modes are currently supported)
+use constant FTPS_PORT   => 4;
+use constant FTPS_EPRT_1 => 5;    # EPRT 1 - Internet Protocol Version 4
+use constant FTPS_EPRT_2 => 6;    # EPRT 2 - Internet Protocol Version 6
+
+# Misc constants
 use constant TRACE_MOD => 5;   # How many iterations between ".".  Must be >= 2.
 
 # Only used while the call to new() is in scope!
@@ -87,8 +98,11 @@ sub new {
   # Using this feature is unsupported.  Use at own risk!
   my $advanced     = (ref ($arg->{SSL_Advanced}) eq "HASH")
                                    ? $arg->{SSL_Advanced} : \%ssl_args;
+  my $pasvHost     = $arg->{OverridePASV};
+  my $fixHelp      = $arg->{OverrideHELP};
 
   # Determine where to write the Debug info to ...
+  my $pv = sprintf ("%s  [%vd]", $], $^V);   # The version of perl!
   if ( $use_logfile ) {
      my $open_mode = ( $debug == 2 ) ? ">>" : ">";
      my $f = $arg->{DebugLogFile};
@@ -99,6 +113,7 @@ sub new {
                                  "Can't create debug logfile: $f ($!)");
      unless ( $f_exists ) {
         print $FTPS_ERROR "\nNet-FTPSSL Version: $VERSION\n\n";
+        print $FTPS_ERROR "Perl: $pv,  OS: $^O\n\n";
         print $FTPS_ERROR "Server (port): $host ($port)\n\n";
      }
      $debug = 2;                  # Already know Debug is turned on ...
@@ -111,6 +126,7 @@ sub new {
 #    $FTPS_ERROR->autoflush (1);
 
      print STDERR "\nNet-FTPSSL Version: $VERSION\n\n";
+     print STDERR "Perl: $pv,  OS: $^O\n\n";
      print STDERR "Server (port): $host ($port)\n\n";
   }
 
@@ -198,15 +214,41 @@ sub new {
   }
 
   # These options control the behaviour of the Net::FTPSSL class ...
-  ${*$obj}{Crypt}     = $encrypt_mode;
-  ${*$obj}{debug}     = $debug;
-  ${*$obj}{trace}     = $trace;
-  ${*$obj}{timeout}   = $timeout;
-  ${*$obj}{buf_size}  = $buf_size;
-  ${*$obj}{type}      = MODE_ASCII;
-  ${*$obj}{data_prot} = $data_prot;
-  ${*$obj}{Croak}     = $die;
-  ${*$obj}{FixPutTs}  = ${*$obj}{FixGetTs} = $pres_ts;
+  ${*$obj}{Host}         = $host;
+  ${*$obj}{Crypt}        = $encrypt_mode;
+  ${*$obj}{debug}        = $debug;
+  ${*$obj}{trace}        = $trace;
+  ${*$obj}{timeout}      = $timeout;
+  ${*$obj}{buf_size}     = $buf_size;
+  ${*$obj}{type}         = MODE_ASCII;
+  ${*$obj}{data_prot}    = $data_prot;
+  ${*$obj}{Croak}        = $die;
+  ${*$obj}{FixPutTs}     = ${*$obj}{FixGetTs} = $pres_ts;
+  ${*$obj}{OverridePASV} = $pasvHost;
+  ${*$obj}{dcsc_mode}    = FTPS_PASV;
+
+  # Check if overriding "_help()" ...
+  if ( defined $fixHelp ) {
+     my %helpHash;
+     my %emptyHash;
+
+     if ( ref ($fixHelp) eq "ARRAY" ) {
+        foreach (@{$fixHelp}) {
+          $helpHash{uc($_)} = 1;
+        }
+     } elsif ( $fixHelp ) {
+       ${*$obj}{OverrideHELP} = 1;   # All FTP commands supported ...
+     }
+
+     # Set the "cache" arrays used by "_help()" so that it can still be called!
+     ${*$obj}{help_cmds_found} = \%helpHash;
+     ${*$obj}{help_cmds_msg} = "214 HELP Command Overriden by request.";
+
+     # Will always return false for supported("SITE", "xxx") ...
+     ${*$obj}{help_SITE_found} = \%emptyHash;
+     ${*$obj}{help_SITE_msg} = ${*$obj}{help_cmds_msg};
+  }
+  # End overriding "_help()" ...
 
   ${*$obj}{ftpssl_filehandle} = $FTPS_ERROR  if ( $debug == 2 );
   $FTPS_ERROR = undef;
@@ -250,14 +292,37 @@ sub quit {
   return 1;
 }
 
-sub pasv {
+sub force_epsv {
   my $self = shift;
+  my $epsv_mode = shift || "1";
 
-  # Can only do this for encrypted Command Channels.
-  if ( ${*$self}{Crypt} ne CLR_CRYPT ) {
-     $self->_pbsz();
-     unless ($self->_prot()) { return $self->_croak_or_return (); }
+  unless ($epsv_mode eq "1" || $epsv_mode eq "2") {
+    return $self->croak_or_return (0, "Invalid IP Protocol Flag ($epsv_mode)");
   }
+
+  # Don't resend the command to the FTPS server if it was sent before!
+  if ( ${*$self}{dcsc_mode} != FTPS_EPSV_1 &&
+       ${*$self}{dcsc_mode} != FTPS_EPSV_2 ) {
+    $self->command("EPSV", "ALL");
+    unless ($self->response () == CMD_OK) { return $self->_croak_or_return (); }
+  }
+
+  # Now that only EPSV is supported, remember which one was requested ...
+  # You can no longer swap back to PASV, PORT or EPRT.
+  ${*$self}{dcsc_mode} = ($epsv_mode eq "1") ? FTPS_EPSV_1 : FTPS_EPSV_2;
+
+  # Now check out if the requested EPSV mode was actually supported ...
+  $self->command("EPSV", $epsv_mode);
+  unless ($self->response () == CMD_OK) { return $self->_croak_or_return (); }
+
+  # So the server will release the returned port!
+  $self->_abort();
+
+  return (1);    # Success!
+}
+
+sub _pasv {
+  my $self = shift;
 
   $self->command("PASV");
 
@@ -275,6 +340,66 @@ sub pasv {
 
   my $host = join( '.', @address[ 0 .. 3 ] );
   my $port = $address[4] * 256 + $address[5];
+
+  if ( ${*$self}{OverridePASV} ) {
+     my $ip = $host;
+     $host = ${*$self}{OverridePASV};
+     $self->_print_DBG ( "--- Overriding PASV IP Address $ip with $host\n" );
+  }
+
+  return ($host, $port);
+}
+
+sub _epsv {
+  my $self = shift;
+  my $ipver = shift;
+
+  $self->command ("EPSV", ($ipver == FTPS_EPSV_1) ? "1" : "2");
+
+  unless ( $self->response () == CMD_OK ) { return $self->_croak_or_return (); }
+  my $msg = $self->last_message ();
+
+  # [227] [Entering Extended Passive Mode] (|||<port>|).
+  $msg =~ m/[(](.)(.)(.)(\d+)(.)[)]/;
+
+  my ($s1, $s2, $s3, $port, $s4) = ($1, $2, $3, $4, $5);
+
+  # By definition, EPSV must use the same host for the DC as the CC.
+  return (${*$self}{Host}, $port);
+}
+
+sub prep_data_channel {
+  my $self = shift;
+
+  # Should only do this for encrypted Command Channels.
+  if ( ${*$self}{Crypt} ne CLR_CRYPT ) {
+     $self->_pbsz();
+     unless ($self->_prot()) { return $self->_croak_or_return (); }
+  }
+
+  # Determine what host/port pairs to use for the data channel ...
+  my $mode = ${*$self}{dcsc_mode};
+  my ($host, $port);
+  if ( $mode == FTPS_PASV ) {
+     ($host, $port) = $self->_pasv ();
+  } elsif ( $mode == FTPS_EPSV_1 || $mode == FTPS_EPSV_2 ) {
+     ($host, $port) = $self->_epsv ($mode);
+  } else {
+     my $err = ($mode == FTPS_PORT ||
+                $mode == FTPS_EPRT_1 || $mode == FTPS_EPRT_2)
+                   ? "Active FTP mode ($mode)"
+                   : "Unknown FTP mode ($mode)";
+     return $self->_croak_or_return (0, "Currently doesn't support $err when requesting the data channel port to use!");
+  }
+
+  # Returns if the data channel was established or not ...
+  return ( $self->_open_data_channel ($host, $port) );
+}
+
+sub _open_data_channel {
+  my $self = shift;
+  my $host = shift;
+  my $port = shift;
 
   my $socket;
   if ( ${*$self}{data_prot} eq DATA_PROT_PRIVATE ) {
@@ -294,9 +419,9 @@ sub pasv {
      return $self->_croak_or_return (0, "Currently doesn't support mode ${*$self}{data_prot} for data channels to $host:$port");
   }
 
-  ${*$self}{data_ch} = \*$socket;
+  ${*$self}{data_ch} = \*$socket;  # Must call _get_data_channel() before using.
 
-  return 1;
+  return 1;   # Data Channel was established!
 }
 
 sub _get_data_channel {
@@ -335,7 +460,7 @@ sub list {
 
   my $dati = "";
 
-  unless ( $self->pasv() ) {
+  unless ( $self->prep_data_channel() ) {
     return ();    # Already decided not to call croak if you get here!
   }
 
@@ -362,6 +487,7 @@ sub list {
       next if $! == EINTR;
       my $type = $nlst_flg ? 'nlst()' : 'list()';
       $self->_croak_or_return (0, "System read error on read while $type: $!");
+      $io->close();
       return ();
     }
     $dati .= $tmp;
@@ -475,7 +601,7 @@ sub get {
     $fix_cr_issue = 0;
   }
 
-  unless ( $self->pasv() ) {
+  unless ( $self->prep_data_channel() ) {
     if ( $close_file ) {
        close ($localfd);
        unlink ($file_loc);
@@ -829,7 +955,7 @@ sub _common_put {
     $fix_cr_issue = 0;
   }
 
-  unless ( $self->pasv() ) {
+  unless ( $self->prep_data_channel() ) {
     close ($localfd)  if ($close_file);
     return undef;    # Already decided not to call croak if you get here!
   }
@@ -1031,7 +1157,7 @@ sub supported {
    my $help = $self->_help ();
 
    # Only finds exact matches, no abbreviations like some FTP servers allow.
-   if (exists $help->{$cmd}) {
+   if ( ${*$self}{OverrideHELP} || exists $help->{$cmd} ) {
       $result = 1;           # Was a valid FTP command
       ${*$self}{last_ftp_msg} = "214 The $cmd command is supported.";
    } else {
@@ -1041,7 +1167,7 @@ sub supported {
    # Are we validating a SITE sub-command?
    if ($result && $cmd eq "SITE" && $site_cmd ne "") {
       my $help2 = $self->_help ($cmd);
-      if (exists $help2->{$site_cmd}) {
+      if ( ${*$self}{OverrideHELP} || exists $help2->{$site_cmd} ) {
          ${*$self}{last_ftp_msg} = "214 The $cmd sub-command $site_cmd is supported.";
       } else {
          ${*$self}{last_ftp_msg} = "502 Unknown $cmd sub-command - $site_cmd.";
@@ -1867,7 +1993,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.15
+=head1 VERSION 0.16
 
 =head1 SYNOPSIS
 
@@ -1905,7 +2031,7 @@ Perl as described in RFC959 and RFC2228.  It will use TLS by default.
 =item new( HOST [, OPTIONS ] )
 
 Creates a new B<Net::FTPSSL> object and opens a connection with the
-C<HOST>. C<HOST> is the address of the FTP server and it's a required
+C<HOST>. C<HOST> is the address of the FTPS server and it's a required
 argument. OPTIONS are passed in a hash like fashion, using key and value
 pairs.
 
@@ -1968,6 +2094,23 @@ options when start_SSL() is called.  If an option here conflicts with other
 options we would normally use, entries in this hash take precedence.  See
 I<IO::Socket::SSL> for these options.
 
+B<OverridePASV> - Some I<FTPS> servers sitting behind a firewall incorrectly
+return their local IP Address instead of their external IP Address used
+outside the firewall where the client is.  To use this option to correct this
+problem, you must specify the correct host to use for the I<data channel>
+connection.  This should usually match what you provided as the host!
+
+B<OverrideHELP> - Some I<FTPS> servers on encrypted connections incorrctly send
+back part of the response to the B<HELP> command in clear text instead of it all
+being encryped, breaking the command channel connection.  This class calls
+B<HELP> internally via I<supported()> for some conditional logic, making a work
+around necessary to be able to talk to such servers.
+
+This option supports three distinct modes to support your needs.  You can pass
+a reference to an array that lists all the B<FTP> commands your sever supports,
+you can set it to B<1> to say all commands are supported, or set it to B<0> to
+say none of the commands are supported.  See I<supported()> for more details.
+
 =back
 
 =head1 METHODS
@@ -2028,7 +2171,7 @@ Sets the file transfer mode to binary. No transformation will be done.
 
 =item get( REMOTE_FILE, [LOCAL_FILE] )
 
-Retrieves the I<REMOTE_FILE> from the ftp server. I<LOCAL_FILE> may be a
+Retrieves the I<REMOTE_FILE> from the ftps server. I<LOCAL_FILE> may be a
 filename or a filehandle.  Return B<undef> if it fails.
 
 If the option I<PreserveTimestamp> was used, and the FTPS server supports it,
@@ -2037,7 +2180,7 @@ I<REMOTE_FILE>.
 
 =item put( LOCAL_FILE, [REMOTE_FILE] )
 
-Stores the I<LOCAL_FILE> onto the remote ftp server. I<LOCAL_FILE> may be a
+Stores the I<LOCAL_FILE> onto the remote ftps server. I<LOCAL_FILE> may be a
 filehandle, but in this case I<REMOTE_FILE> is required.
 Return B<undef> if it fails.
 
@@ -2047,7 +2190,7 @@ I<LOCAL_FILE>.
 
 =item uput( LOCAL_FILE, [REMOTE_FILE] )
 
-Stores the I<LOCAL_FILE> onto the remote ftp server. I<LOCAL_FILE> may be a
+Stores the I<LOCAL_FILE> onto the remote ftps server. I<LOCAL_FILE> may be a
 filehandle, but in this case I<REMOTE_FILE> is required.  If I<REMOTE_FILE>
 already exists on the ftps server, a unique name is calculated for use instead.
 
@@ -2074,7 +2217,7 @@ if it was done before the rename, other more serious problems could crop up if
 the resulting timestamp was old enough.
 
 On failure this function will attempt to I<delete> the scratch file for you if
-its at all possible.  You will have to talk to your FTP server administrator on
+its at all possible.  You will have to talk to your FTPS server administrator on
 good values for I<PREFIX> and I<POSTFIX> if the defaults are no good for you.
 
 B<PREFIX> defaults to I<_tmp.> unless you override it.  Set to "" if you need
@@ -2137,7 +2280,7 @@ at the moment.
 
 =item noop()
 
-It specifies no action other than the server send an OK reply.
+It requires no action other than the server send an OK reply.
 
 =item rename( OLD, NEW )
 
@@ -2197,6 +2340,17 @@ exactly.  If the I<CMD> is SITE and I<SITE_OPT> is supplied, it will also check
 if the specified I<SITE_OPT> sub-command is supported.  Not all servers will
 support the use of I<SITE_OPT>.  This function ignores the B<Croak> request.
 
+It determines if a command is supported by calling B<HELP> and parses the
+results for a match.  The results are cached so B<HELP> is only called once.
+
+Some rare servers send the B<HELP> results partially encrypted and partially in
+clear text, causing the encrypted channel to break.  In that case you will need
+to override this method for things to work correctly with these non-conforming
+servers.  See the I<OverrideHELP> option in the constructor for how to do this.
+
+This method is used internally for conditional logic only when checking if the
+following I<FTP> commands are allowed: B<ALLO>, B<NOOP>, B<MFMT>, and B<MDTM>.
+
 =item quot( CMD [,ARGS] )
 
 Send a command, that Net::FTPSSL does not directly support, to the remote
@@ -2225,6 +2379,21 @@ I<message> & I<last_message> B<are not> shared between instances!
 
 Returns the one digit status code associated with the last response from the
 FTPS server.
+
+=item force_epsv( [1/2] )
+
+Used to force B<EPSV> instead of B<PASV> when establishing a data channel.
+Once this method is called, it is imposible to swap back to B<PASV>.  It does
+this by sending "B<EPSV ALL>" to the server.  Afterwards the server will reject
+all B<EPTR>, B<PORT> and B<PASV> commands.
+
+After the "B<EPSV ALL>" is sent, it will attempt to verify your choice of
+IP Protocol to use B<1> or B<2> (v4 or v6).  The default is B<1>.  It will use
+that protocol for all future B<PASV> calls.  If you need to change which
+protocol to use, you may call this function a second time to swap to the other
+B<EPSV> Protocol.
+
+This method returns true if it succeeds, or false if it fails.
 
 =item set_croak( [1/0] )
 
@@ -2330,7 +2499,7 @@ collection of modules (libnet).
 
 Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
 and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
-L<http://search.cpan.org/~cleach/Net-FTPSSL-0.15/FTPSSL.pm>.
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.16/FTPSSL.pm>.
 
 Patches are appreciated when a log file and sample code are also provided.
 

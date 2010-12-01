@@ -2,6 +2,29 @@ Revision history for Perl extension Net::FTPSSL.
 
 Version - YYYY/MM/DD
 --------------------
+0.16 2010/11/30 08:30:00
+  - Used Perl's special variables to write the Perl verion and OS to the logs
+    to make support easier when trouble shooting tickets.
+  - Fixes for Bug Id 61432.
+  - On systems like "Connect:Enterprise UNIX", it incorrectly sends the
+    response to HELP partially in clear text and partially encrypted on the
+    command channel.  This causes this class to barf and never recover once it
+    hits the clear text.  So a new "OverrideHELP" option was created to bypass
+    calls to HELP if your server has this strange behavior.  This is needed
+    since HELP is called internally by the Net::FTPSSL class via supported()!
+    ** Maybe in the future I'll figure out a way to dynamically handle this. **
+  - On some systems the server administrator won't configure their servers
+    correctly to use the correct IP Address in the PASV response through a
+    firewall when establishing a new Data Channel Connection.  To get arround
+    this, a new "OverridePASV" option was created to force the use of the
+    Specified Server Name instead of the invalid IP Address returned in the
+    PASV response!
+    ** Maybe in the future I'll figure out a way to dynamically handle this. **
+  - Added "OverridePASV" & "OverrideHELP" test cases to t/10-complex.t
+  - Added EPSV support.  Required the reorginization of some internal
+    undocumented methods that no one should be using.
+  - Added EPSV test to t/10-complex.t
+
 0.15 2010/04/27 08:30:00
   - Fixes for Bug Id 53719.  Requested all internal calls to "ALLO" be
     conditional since some server connectins die when it receives an "ALLO"
@@ -11,7 +34,7 @@ Version - YYYY/MM/DD
     command() or response() or if recursion was detected.
   - Fixed quot() to no longer upshift the command to upper case.  Discovered
     case where lower case was required.  So it's now up the the caller to
-    put in upper case if it's required!  Also no longer checkes if the command
+    put in upper case if it's required!  Also no longer checks if the command
     is valid according to HELP.  Some servers attempt to be sneeky by not
     advertising all available commands.
 

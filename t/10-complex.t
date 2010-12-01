@@ -9,10 +9,10 @@
 
 use strict;
 
-use Test::More tests => 50;
+use Test::More tests => 57;
 use File::Copy;
 
-# plan tests => 49;  # Can't use due to BEGIN block
+# plan tests => 56;  # Can't use due to BEGIN block
 
 BEGIN { use_ok('Net::FTPSSL') }    # Test # 1
 
@@ -81,6 +81,7 @@ SKIP: {
     my %callback_hash;
     my $debug_log1 = "./t/BABY_1_new.txt";
     my $debug_log2 = "./t/BABY_2_new.txt";
+    my $debug_log3 = "./t/BABY_3_new.txt";
 
     # Delete test files from previous run
     unlink ("./t/test_file_new.tar.gz",
@@ -113,7 +114,9 @@ SKIP: {
     # -------------------------------------------------------------------------
     # Just ignore these connections, just verifying it's not stealing log file.
     # Must manually check the logs to be sure ...
+    # Also checks the 2 override options in various modes ...
     # -------------------------------------------------------------------------
+    my @help = ("MFMT", "NOOP");
     my $badftp1 = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
                             DataProtLevel => $data, useSSL => $encrypt_mode,
                             PreserveTimestamp => 0, DebugLogFile => $debug_log1,
@@ -121,15 +124,50 @@ SKIP: {
     my $badftp2 = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
                             DataProtLevel => $data, useSSL => $encrypt_mode,
                             PreserveTimestamp => 1, DebugLogFile => $debug_log2,
-                            Debug => 1, Trace => 1, Croak => 1 );
+                            Debug => 1, Trace => 1, Croak => 1,
+                            OverridePASV => $server );
+    my $badftp3 = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
+                            DataProtLevel => $data, useSSL => $encrypt_mode,
+                            PreserveTimestamp => 1, DebugLogFile => $debug_log3,
+                            Debug => 1, Trace => 1, Croak => 1,
+                            OverrideHELP => 1 );
     isa_ok( $badftp1, 'Net::FTPSSL', '2nd Net::FTPSSL object creation' );
     isa_ok( $badftp2, 'Net::FTPSSL', '3rd Net::FTPSSL object creation' );
+    isa_ok( $badftp3, 'Net::FTPSSL', '4th Net::FTPSSL object creation' );
     ok( $badftp1->login ($user, $pass), "2nd Login to $server" );
     ok( $badftp2->login ($user, $pass), "3rd Login to $server" );
+    ok( $badftp3->login ($user, $pass), "4th Login to $server" );
     $badftp1->pwd ();
-    $badftp2->noop ();
+    $badftp2->list ();
+    $badftp3->noop ();
     $badftp1->quit ();
     $badftp2->quit ();
+    $badftp3->quit ();
+    $badftp3 = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
+                            DataProtLevel => $data, useSSL => $encrypt_mode,
+                            PreserveTimestamp => 1, DebugLogFile => $debug_log3,
+                            Debug => 2, Trace => 1, Croak => 1,
+                            OverrideHELP => \@help );
+    isa_ok( $badftp3, 'Net::FTPSSL', 'Appending to 4th Net::FTPSSL object logs' );
+    ok( $badftp3->login ($user, $pass), "Repeat 4th Login to $server" );
+    $badftp3->pwd ();
+    $badftp3->quit ();
+    $badftp3 = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
+                            DataProtLevel => $data, useSSL => $encrypt_mode,
+                            PreserveTimestamp => 1, DebugLogFile => $debug_log3,
+                            Debug => 2, Trace => 1, Croak => 1,
+                            OverrideHELP => 0 );
+    isa_ok( $badftp3, 'Net::FTPSSL', 'Appending to 4th Net::FTPSSL object logs again' );
+    ok( $badftp3->login ($user, $pass), "Repeat 4th Login to $server again" );
+    $badftp3->pwd ();
+    $badftp3->set_croak (0);
+    my $t = $badftp3->force_epsv (1);
+    unless ( $t ) { $t = $badftp3->force_epsv (2); }
+    ok ( $t, "Force Extended Passive Mode" );
+    my @lst = $badftp3->list ();
+    push (@lst, "SUB-TEST-LIST-RESULTS-FROM-OTHER-SECTION");
+    print_result (\@lst);   # Display's list in may log, not this one!
+    $badftp3->quit ();
 
     # -------------------------------------------------------------------------
     # Back to processing the real tests ...
@@ -208,7 +246,7 @@ SKIP: {
 
     # Query after put() call so there is something to find!
     # (Otherwise it looks like it may have failed.)
-    my @lst = $ftp->list ();
+    @lst = $ftp->list ();
     ok( scalar @lst != 0, 'list() command' );
     print_result (\@lst);
 
