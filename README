@@ -1,4 +1,4 @@
-Net-FTPSSL version 0.16
+Net-FTPSSL version 0.17
 =======================
 
 Net::FTPSSL is an object oriented Perl module which implements a simple
@@ -81,7 +81,7 @@ This module requires these other modules and libraries:
 COPYRIGHT AND LICENCE
 
 Copyright (C) 2005 by Marco Dalla Stella
-Copyright (C) 2009 by Curtis Leach
+Copyright (C) 2009 - 2011 by Curtis Leach
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.6 or,

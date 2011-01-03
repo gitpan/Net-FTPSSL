@@ -2,6 +2,21 @@ Revision history for Perl extension Net::FTPSSL.
 
 Version - YYYY/MM/DD
 --------------------
+0.17 2011/01/03 08:30:00
+  - Fixed a subtle bug in response(), now tests if parse succeeded instead
+    of assuming it.  Allowed me to simplify this messy code quite a bit.
+  - Reordered the methods in the POD to put some of the more relevant FTP
+    commands closer to the top & the more obscure at the bottom to make
+    for easier reading of the documentation.
+  - Reworked t/10-complex.t quite a bit.  Made sure croak was always turned
+    off immediately after a successful login.  Also now using the same hash
+    for all the connection attempts.  I really need to take the time to do
+    further redesign this script to make it easier to troubleshoot.
+  - Fixed the smoke tester failures.  (They always answer no to the deeper test)
+  - t/10-complex.t now checks if OverridePASV or OverrideHELP are needed against
+    the test server & dynamically adds it for the test cases if needed.
+  - Added PASV/EPSV prompt to t/10-complex.t script instead of assuming PASV.
+
 0.16 2010/11/30 08:30:00
   - Used Perl's special variables to write the Perl verion and OS to the logs
     to make support easier when trouble shooting tickets.

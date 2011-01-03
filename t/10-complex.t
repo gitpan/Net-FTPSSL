@@ -8,15 +8,23 @@
 # So the logic here can be a bit convoluted.
 
 use strict;
+use warnings;
 
-use Test::More tests => 57;
+use Test::More tests => 60;   # Also update skipper (one less)
 use File::Copy;
 
-# plan tests => 56;  # Can't use due to BEGIN block
+my $skipper = 59;
+
+# plan tests => 59;  # Can't use due to BEGIN block
 
 BEGIN { use_ok('Net::FTPSSL') }    # Test # 1
 
 sleep (1);  # So test 1 completes before the message prints!
+
+# These log files need to be global ...
+my $debug_log1 = "./t/BABY_1_new.txt";
+my $debug_log2 = "./t/BABY_2_new.txt";
+my $debug_log3 = "./t/BABY_3_new.txt";
 
 diag( "\nYou can also perform a deeper test." );
 diag( "Some information will be required for this test:" );
@@ -25,40 +33,40 @@ diag( "where the user has permissions to read and write." );
 my $more_test = ask_yesno("Do you want to make a deeper test");
 
 SKIP: {
-    skip "Deeper test skipped for some reason...", 49 unless $more_test;
+    skip ( "Deeper test skipped for some reason...", $skipper ) unless $more_test;
 
-    my( $address, $server, $port, $user, $pass, $dir, $mode, $data, $encrypt_mode ); 
+    my( $address, $server, $port, $user, $pass, $dir, $mode, $data, $encrypt_mode, $psv_mode ); 
 
-    $address = ask("Server address ( host[:port] )");
+    $address = ask2("Server address ( host[:port] )");
+    ( $server, $port ) = split( /:/, $address );
+    # $port = 21 unless $port;   # Let FTPSSL provide the default port.
 
-    $user = ask("\tUser (default 'anonymous')");
+    $user = ask2("\tUser", "anonymous");
 
-    $pass = ask("\tPassword (default 'user\@localhost')");
+    $pass = ask2("\tPassword [a space for no password]", "user\@localhost");
 
-    $dir = ask("\tDirectory (default <HOME>)");
+    $dir = ask2("\tDirectory", "<HOME>");
+    $dir = "" if ($dir eq "<HOME>");   # Will ask server for it later on.
 
-    $mode = uc (ask("\tConnection mode (I)mplicit, (E)xplicit, or (C)lear. (default 'E')"));
+    $mode = ask("\tConnection mode (I)mplicit, (E)xplicit, or (C)lear.",
+                EXP_CRYPT, "(I|E|C)");
 
     if ( $mode eq CLR_CRYPT ) {
        $data = $encrypt_mode = "";   # Make sure not undef ...
     } else {
-       $data = uc (ask("\tData Connection mode (C)lear or (P)rotected. (default 'P')"));
+       $data = ask("\tData Connection mode (C)lear or (P)rotected.",
+                   DATA_PROT_PRIVATE, "(C|S|E|P)");
 
-       $encrypt_mode = uc (ask("\tUse (T)LS or (S)SL encryption (Default 'T')"));
+       $encrypt_mode = ask("\tUse (T)LS or (S)SL encryption", "T", "(T|S)");
     }
+    $encrypt_mode = ($encrypt_mode eq "S") ? 1 : 0;
 
-    ( $server, $port ) = split( /:/, $address );
+    $psv_mode = ask("\tUse (P)ASV or (E)PSV for data connections", "P", "(P|E)");
+
 
     # INET didn't support despite comments elsewhere.
     # my @svrs = split (/,\s*/, $server);
     # if (scalar (@svrs) > 1) { $server = \@svrs; }   # Requested list of servers
-
-    # $port = 21 unless $port;   # Let FTPSSL provide the default port.
-    $mode = EXP_CRYPT unless $mode =~ /^(I|E|C|)$/;
-    $data = DATA_PROT_PRIVATE unless $data =~ /^(C|S|E|P|)$/;
-    $user = 'anonymous' unless $user;
-    if ( $pass eq " " ) { $pass = ""; } elsif ( ! $pass) { $pass = 'user@localhost' unless $pass; }
-    $encrypt_mode = ($encrypt_mode eq "S") ? 1 : 0;
 
     # The main copy of the log file ...
     my $log_file = "./t/test_trace_log_new.txt";  # A common copy to work with.
@@ -79,106 +87,95 @@ SKIP: {
     # -----------------------------------------------------------
 
     my %callback_hash;
-    my $debug_log1 = "./t/BABY_1_new.txt";
-    my $debug_log2 = "./t/BABY_2_new.txt";
-    my $debug_log3 = "./t/BABY_3_new.txt";
-
     # Delete test files from previous run
     unlink ("./t/test_file_new.tar.gz",
             "./t/FTPSSL.pm_new.tst",
-            $log_file, $copy_file, $debug_log1, $debug_log2);
+            $log_file, $copy_file,
+            $debug_log1, $debug_log2, $debug_log3);
 
     # So we can save the Debug trace in a file from this test.
     # We don't use DebugLogFile for this on purpose so that everything
     # written to STDERR is in the log file, including msgs from this test!
     # But doing it this way is very undesireable in a real program!
+    # See test_log_redirection () for correct way to save to a log file.
     open (OLDERR, ">&STDERR");
     open (STDERR, "> $log_file");
 
     # print STDERR "\nNet-FTPSSL Version: " . $Net::FTPSSL::VERSION . "\n\n";
 
     # Leave SSL_Advanced commented out ... Unsupported feature ...
-    my $ftp = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
-                                DataProtLevel => $data,
-                                useSSL => $encrypt_mode,
-                                # SSL_Advanced => \%advanced_hash,
-                                PreserveTimestamp => 1,
-                                Debug => 1, Trace => 1, Croak => 1 );
+    # This hash provides the basic info for all the FTPSSL connections
+    # based on the user's answers above.
+    my %ftps_opts = ( Port => $port, Encryption => $mode,
+                      DataProtLevel => $data, useSSL => $encrypt_mode,
+                      # SSL_Advanced => \%advanced_hash,
+                      Debug => 1, Trace => 1 );
+
+    unless ( valid_credentials ( $server, \%ftps_opts, $user, $pass ) ) {
+       skip("Can't log into the FTPS Server.  Skipping the remaining tests ...",
+            $skipper );
+    }
+
+    # Only call if the command channel is encrypted during the test ...
+    if ( $mode ne CLR_CRYPT ) {
+       # Will dynamically add OverrideHELP for future calls to new() if required ...
+       check_for_help_issue ( $server, \%ftps_opts, $user, $pass );
+    }
+
+    if ( $psv_mode eq "P" ) {
+       # Will dynamically add OverridePASV for future calls to new() if required ...
+       unless (check_for_pasv_issue ( $server, \%ftps_opts, $user, $pass, $mode )) {
+          skip ( "PASV not working, there are issues with your FTPS server.",
+                 $skipper );
+       }
+    }
+
+    # Put back into hash going forward ...
+    $ftps_opts{PreserveTimestamp} = 1;
+    $ftps_opts{Croak} = 1;
+
+    print STDERR "\nStarting the real server test ...\n";
+
+    # Writes logs to STDERR which this script redirects to a file ...
+    my $ftp = Net::FTPSSL->new( $server, \%ftps_opts );
 
     isa_ok( $ftp, 'Net::FTPSSL', 'Net::FTPSSL object creation' );
 
     ok( $ftp->login ($user, $pass), "Login to $server" );
 
-    $dir = $ftp->pwd ()  unless $dir;   # Ask for HOME dir if not provided!
+    # Turning off croak now that our environment is correct!
+    $ftp->set_croak (0);
+
+    if ( $psv_mode ne "P" ) {
+       my $t = $ftp->force_epsv (1);
+       $psv_mode = ( $t ) ? "1" : "2";
+       $t = $ftp->force_epsv (2)  unless ( $t );
+       ok ( $t, "Force Extended Passive Mode (EPSV $psv_mode)" );
+       unless ( $t ) {
+         --$skipper;
+         skip ( "EPSV not supported, please rerun test using PASV instead!",
+                $skipper );
+       }
+    } else {
+       ok ( 1, "Using PASV mode for data connections" );
+    }
+
+    # Ask for the user's HOME dir if it's not provided!
+    $dir = $ftp->pwd ()  unless ($dir);
 
     # -------------------------------------------------------------------------
-    # Just ignore these connections, just verifying it's not stealing log file.
-    # Must manually check the logs to be sure ...
-    # Also checks the 2 override options in various modes ...
+    # Verifying extra connections work as expected and don't interfere
+    # with the logs for this main test going to STDERR ...
     # -------------------------------------------------------------------------
-    my @help = ("MFMT", "NOOP");
-    my $badftp1 = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
-                            DataProtLevel => $data, useSSL => $encrypt_mode,
-                            PreserveTimestamp => 0, DebugLogFile => $debug_log1,
-                            Debug => 1, Trace => 1, Croak => 1 );
-    my $badftp2 = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
-                            DataProtLevel => $data, useSSL => $encrypt_mode,
-                            PreserveTimestamp => 1, DebugLogFile => $debug_log2,
-                            Debug => 1, Trace => 1, Croak => 1,
-                            OverridePASV => $server );
-    my $badftp3 = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
-                            DataProtLevel => $data, useSSL => $encrypt_mode,
-                            PreserveTimestamp => 1, DebugLogFile => $debug_log3,
-                            Debug => 1, Trace => 1, Croak => 1,
-                            OverrideHELP => 1 );
-    isa_ok( $badftp1, 'Net::FTPSSL', '2nd Net::FTPSSL object creation' );
-    isa_ok( $badftp2, 'Net::FTPSSL', '3rd Net::FTPSSL object creation' );
-    isa_ok( $badftp3, 'Net::FTPSSL', '4th Net::FTPSSL object creation' );
-    ok( $badftp1->login ($user, $pass), "2nd Login to $server" );
-    ok( $badftp2->login ($user, $pass), "3rd Login to $server" );
-    ok( $badftp3->login ($user, $pass), "4th Login to $server" );
-    $badftp1->pwd ();
-    $badftp2->list ();
-    $badftp3->noop ();
-    $badftp1->quit ();
-    $badftp2->quit ();
-    $badftp3->quit ();
-    $badftp3 = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
-                            DataProtLevel => $data, useSSL => $encrypt_mode,
-                            PreserveTimestamp => 1, DebugLogFile => $debug_log3,
-                            Debug => 2, Trace => 1, Croak => 1,
-                            OverrideHELP => \@help );
-    isa_ok( $badftp3, 'Net::FTPSSL', 'Appending to 4th Net::FTPSSL object logs' );
-    ok( $badftp3->login ($user, $pass), "Repeat 4th Login to $server" );
-    $badftp3->pwd ();
-    $badftp3->quit ();
-    $badftp3 = Net::FTPSSL->new( $server, Port => $port, Encryption => $mode,
-                            DataProtLevel => $data, useSSL => $encrypt_mode,
-                            PreserveTimestamp => 1, DebugLogFile => $debug_log3,
-                            Debug => 2, Trace => 1, Croak => 1,
-                            OverrideHELP => 0 );
-    isa_ok( $badftp3, 'Net::FTPSSL', 'Appending to 4th Net::FTPSSL object logs again' );
-    ok( $badftp3->login ($user, $pass), "Repeat 4th Login to $server again" );
-    $badftp3->pwd ();
-    $badftp3->set_croak (0);
-    my $t = $badftp3->force_epsv (1);
-    unless ( $t ) { $t = $badftp3->force_epsv (2); }
-    ok ( $t, "Force Extended Passive Mode" );
-    my @lst = $badftp3->list ();
-    push (@lst, "SUB-TEST-LIST-RESULTS-FROM-OTHER-SECTION");
-    print_result (\@lst);   # Display's list in may log, not this one!
-    $badftp3->quit ();
+    test_log_redirection ( $server, \%ftps_opts, $user, $pass, $psv_mode );
 
     # -------------------------------------------------------------------------
-    # Back to processing the real tests ...
+    # Back to processing the real test cases ...
     # -------------------------------------------------------------------------
     ok( $ftp->cwd( $dir ), "Changed the dir to $dir" );
     my $pwd = $ftp->pwd();
     ok( defined $pwd, "Getting the directory: ($pwd)" );
     $dir = $pwd  if (defined $pwd);     # Convert relative to absolute path.
-
-    # Turning off croak now that our environment is correct!
-    $ftp->set_croak (0);
 
     my $res = $ftp->cdup ();
     $pwd = $ftp->pwd();
@@ -189,7 +186,7 @@ SKIP: {
     ok ( $res, "Returning to proper dir: ($pwd)" );
 
     # Verifying supported() & _help() work as expected.
-    # Must check logs for _help() success, since returns a hash reference.
+    # Must check logs for _help() success, since it returns a hash reference.
 
     ok( $ftp->supported("HELP"), "Checking if HELP is supported" );
     ok( $ftp->_help("HELP"), "Getting the HELP usage" );  # Never fails
@@ -246,7 +243,7 @@ SKIP: {
 
     # Query after put() call so there is something to find!
     # (Otherwise it looks like it may have failed.)
-    @lst = $ftp->list ();
+    my @lst = $ftp->list ();
     ok( scalar @lst != 0, 'list() command' );
     print_result (\@lst);
 
@@ -367,12 +364,12 @@ SKIP: {
     # Clear the command channel, do limited work after this ...
     # Add any new tests before this block ...
     # -----------------------------------------
-    if ( ! $ftp->supported ("ccc") ) {
-       ok ( $ftp->noop (), "Noop since CCC not supported on this server." );
-    } elsif ( $mode eq CLR_CRYPT ) {
+    if ( $mode eq CLR_CRYPT ) {
        ok ( $ftp->noop (), "Noop since CCC not supported using regular FTP." );
-    } else {
+    } elsif ( $ftp->supported ("ccc") ) {
        ok ( $ftp->ccc (), "Clear Command Channel Test" );
+    } else {
+       ok ( $ftp->noop (), "Noop since CCC not supported on this server." );
     }
     ok ( $ftp->pwd (), "Get Current Directory Again" );
 
@@ -392,12 +389,273 @@ SKIP: {
     File::Copy::copy ($log_file, $copy_file);
 }
 
+# =====================================================================
+# Start of subroutines ...
+# =====================================================================
+
+sub valid_credentials {
+   my $server = shift;
+   my $opts = shift;
+   my $user = shift;
+   my $pass = shift;
+
+   print STDERR "\nValidating the user input credentials against the server ...\n";
+
+   my $ftps = Net::FTPSSL->new( $server, $opts );
+
+   isa_ok( $ftps, 'Net::FTPSSL', 'Net::FTPSSL ' . $Net::FTPSSL::ERRSTR );
+   --$skipper;
+
+   my $sts = 0;    # Assume failure ...
+
+   if ( defined $ftps ) {
+      $sts = $ftps->login ($user, $pass);
+      ok( $sts, "Login to $server" );
+      --$skipper;
+
+      if ( $sts ) {
+         $ftps->quit ();
+      } else {
+         diag ("\n=========================================================");
+         diag ("=== Your FTPS login credentials are probably invalid! ===");
+         diag ("=========================================================");
+         diag ("\n");
+      }
+   }
+
+   return ( $sts );
+}
+
+# -----------------------------------------------------------------------------
+# Test for Bug # 61432 (Help responds with mixed encrypted & clear text on CC.)
+# Bug's not in my software, but on the server side!
+# But still need tests for it in this script so all test cases will work.
+# Does no calls to ok() on purpose ...
+# Never open a data channel here ...
+# -----------------------------------------------------------------------------
+sub check_for_help_issue {
+   my $server = shift;
+   my $opts = shift;
+   my $user = shift;
+   my $pass = shift;
+
+   print STDERR "\nTrying to determine if HELP works on encrypted channels ...\n";
+   my $ftps = Net::FTPSSL->new( $server, $opts );
+   $ftps->login ($user, $pass);
+   $ftps->noop ();
+   my $sts = $ftps->quot ("HELP");
+   if ( $sts == CMD_ERROR && $Net::FTPSSL::ERRSTR =~ m/Unexpected EOF/ ) {
+      diag ("\nThis server has issues with the HELP Command.");
+      diag ("You Must use OverrideHELP when calling new() for this server!");
+      diag ("Adding this option for all further testing.");
+      $opts->{OverrideHELP} = 1;   # Assume all FTP commands supported.
+   }
+   $ftps->quit ();
+}
+
+# -----------------------------------------------------------------------------
+# Test for Bug # 61432 (Where PASV returns wrong IP Address)
+# Bug's not in my software, but on the server side!
+# But still need tests for it in this script so all test cases will work.
+# Does no calls to ok() on purpose ...
+# -----------------------------------------------------------------------------
+sub check_for_pasv_issue {
+   my $server = shift;
+   my $opts   = shift;
+   my $user   = shift;
+   my $pass   = shift;
+   my $crypt  = shift;
+
+   print STDERR "\nTrying to determine if PASV returns wrong IP Address ...\n";
+
+   # Uncomment the line below to force the failure case (to debug this code)
+   # I don't have a server to test against where this happens ...
+   # $opts->{OverridePASV} = "abigbadservername";
+
+   my $ftps = Net::FTPSSL->new( $server, $opts );
+   $ftps->login ($user, $pass);
+
+   # WARNING: Do not copy this code, it calls internal undocumented functions
+   # that probably change between releases.  I'm the developer, so I will keep
+   # any changes here in sync with future releases.  But I need this low
+   # level access to see if the server set up PASV correctly through the
+   # firewall. (Bug 61432)  Should be fairly rare to see it fail ...
+
+   if ( $crypt ne CLR_CRYPT ) {
+      $ftps->_pbsz ();
+      return (0)  unless ($ftps->prot ());
+   }
+
+   my ($h, $p) = $ftps->_pasv ();
+
+   # Can we open up the returned data channel ?
+   if ( $ftps->_open_data_channel ($h, $p) ) {
+      $ftps->_abort();
+      $ftps->quit ();
+      print STDERR "\nPASV works fine ...\n";
+      return (1);    # Yes, we don't have to worry about it.
+   }
+
+   # Very, very rare to get this far ...
+
+   print STDERR "Attempting to reopen the same data channel using OveridePASV\n";
+
+   # Now let's see if OverridePASV would have worked ....
+   if ( $ftps->_open_data_channel ($server, $p) ) {
+      print STDERR "Success!\n";
+      diag ("\nThis server has issues with returning the correct IP Address via PASV.");
+      diag ("You Must use OverridePASV when calling new() for this server!");
+      diag ("Adding this option for all further testing.");
+
+      $opts->{OverridePASV} = $server;      # Things should now work!
+
+      $ftps->_abort();
+      $ftps->quit ();
+      print STDERR "\nMust use OverridePASV ...\n";
+      return (1);
+   }
+
+   $ftps->quit();
+   print STDERR "Failure!\n";
+
+   return (0);    # PASV doesn't seem to work at all!
+}
+
+# -------------------------------------------------------------------------
+# Just ignore these connections, just verifying that it's not sharing/stealing
+# the log file.  Must manually examine the logs to be sure it's correct.
+# Also checks the 2 override options in various modes ...
+# Just be aware that OverrideHELP & OverridePASV may already be overriden!
+# -------------------------------------------------------------------------
+sub test_log_redirection {
+   my $server   = shift;
+   my $loc_opts = shift;
+   my $user     = shift;
+   my $pass     = shift;
+   my $psv_flg  = shift;   # P, 1 or 2.  For opening data channels.
+
+   print STDERR "\nCreating secondary connections for other log files ...\n";
+   my @help = ("MFMT", "NOOP");
+
+   my $hlp_ovr_flg = (exists $loc_opts->{OverrideHELP});
+   my $psv_ovr_flg = (exists $loc_opts->{OverridePASV});
+
+   $loc_opts->{PreserveTimestamp} = 0;
+   $loc_opts->{DebugLogFile} = $debug_log1;
+   my $badftp1 = Net::FTPSSL->new( $server, $loc_opts );
+
+   $loc_opts->{PreserveTimestamp} = 1;
+   $loc_opts->{DebugLogFile} = $debug_log2;
+   $loc_opts->{OverridePASV} = $server;
+   my $badftp2 = Net::FTPSSL->new( $server, $loc_opts );
+
+   $loc_opts->{PreserveTimestamp} = 1;
+   $loc_opts->{DebugLogFile} = $debug_log3;
+   delete ($loc_opts->{OverridePASV}) unless ($psv_ovr_flg);
+   $loc_opts->{OverrideHELP} = 1;    # All commands valid
+   my $badftp3 = Net::FTPSSL->new( $server, $loc_opts );
+
+   isa_ok( $badftp1, 'Net::FTPSSL', '2nd Net::FTPSSL object creation' );
+   isa_ok( $badftp2, 'Net::FTPSSL', '3rd Net::FTPSSL object creation' );
+   isa_ok( $badftp3, 'Net::FTPSSL', '4th Net::FTPSSL object creation' );
+   ok( $badftp1->login ($user, $pass), "2nd Login to $server" );
+   ok( $badftp2->login ($user, $pass), "3rd Login to $server" );
+   ok( $badftp3->login ($user, $pass), "4th Login to $server" );
+   $badftp1->set_croak (0);
+   $badftp2->set_croak (0);
+   $badftp3->set_croak (0);
+
+   $badftp2->force_epsv ($psv_flg)  if ($psv_flg ne "P");
+
+   $badftp1->pwd ();
+   $badftp2->list ();    # Uses a data channel
+   $badftp3->noop ();
+   $badftp1->quit ();
+   $badftp2->quit ();
+   $badftp3->quit ();
+
+   $loc_opts->{OverrideHELP} = \@help;  # Some commands valid
+   $loc_opts->{Debug} = 2;
+   $badftp3 = Net::FTPSSL->new( $server, $loc_opts );
+
+   isa_ok( $badftp3, 'Net::FTPSSL', 'Appending to 4th Net::FTPSSL object logs' );
+   ok( $badftp3->login ($user, $pass), "Repeat 4th Login to $server" );
+   $badftp3->set_croak (0);
+   $badftp3->pwd ();
+   $badftp3->quit ();
+
+   $loc_opts->{OverrideHELP} = 0;        # No commands valid
+   $badftp3 = Net::FTPSSL->new( $server, $loc_opts );
+
+   isa_ok( $badftp3, 'Net::FTPSSL', 'Appending to 4th Net::FTPSSL object logs again' );
+   ok( $badftp3->login ($user, $pass), "Repeat 4th Login to $server again" );
+   $badftp3->set_croak (0);
+   $badftp3->pwd ();
+   my $t = $badftp3->force_epsv (1);
+   $t = $badftp3->force_epsv (2)   unless ( $t );
+   ok ( $t, "Force Extended Passive Mode" );
+   my @lst = $badftp3->list ();
+   push (@lst, "SUB-TEST-LIST-RESULTS-FROM-OTHER-SECTION");
+   print_result (\@lst);   # Display's the list in the main log, not this one!
+   $badftp3->quit ();
+
+   print STDERR "End of secondary connections for other log files ...\n\n";
+
+   return;
+}
+
+# Does an automatic shift to upper case for all answers
 sub ask {
   my $question = shift;
-  diag("\n$question ? ");
+  my $default  = uc (shift);
+  my $values   = uc (shift);
+
+  if ( $default ) {
+     diag ("\n$question (Default '$default') ? ");
+  } else {
+     diag("\n$question ? ");
+  }
+
+  my $answer = uc (<STDIN>);
+  chomp $answer;
+
+  if ( ! $answer ) {
+     $answer = $default;
+  } elsif ( $values && $answer !~ m/^$values$/ ) {
+     $answer = $default;   # Change invalid value to default answer!
+  }
+
+  # diag ("ANS: [$answer]");
+
+  return $answer;
+}
+
+# This version doesn't do an automatic upshift
+# Also provides a way to enter "" as a valid value!
+sub ask2 {
+  my $question = shift;
+  my $default  = shift || "";
+  my $values   = shift || "";
+
+  if ( $default ) {
+     diag ("\n$question (Default '$default') ? ");
+  } else {
+     diag("\n$question ? ");
+  }
 
   my $answer = <STDIN>;
   chomp $answer;
+
+  if ( $answer =~ m/^\s+$/ ) {
+     $answer = "";    # Overriding any defaults ...
+  } elsif ( ! $answer ) {
+     $answer = $default;
+  } elsif ( $values && $answer !~ m/^$values$/ ) {
+     $answer = $default;   # Change invalid value to default answer!
+  }
+
+  # diag ("ANS: [$answer]");
+
   return $answer;
 }
 
@@ -434,7 +692,7 @@ sub print_result {
    print STDERR "-----------------------------------------------\n";
 }
 
-# Testing out the call back functionality of v0.07 on ...
+# Testing out the call back functionality as of v0.07 on ...
 sub callback_func {
    my $ftps_function_name = shift;
    my $data_ref     = shift;      # The data to/from the data channel.
@@ -470,7 +728,7 @@ sub callback_func {
    return ();
 }
 
-# Testing out the end call back functionality of v0.07 on ...
+# Testing out the end call back functionality as of v0.07 on ...
 sub end_callback_func {
    my $ftps_function_name = shift;
    my $total_len          = shift;   # The total number of bytes sent out

@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : kral <kral at paranici dot org>
 # Created : 01 March 2005
-# Version : 0.16
+# Version : 0.17
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -24,7 +24,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.16";
+$VERSION = "0.17";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -69,7 +69,7 @@ use constant FTPS_EPRT_2 => 6;    # EPRT 2 - Internet Protocol Version 6
 # Misc constants
 use constant TRACE_MOD => 5;   # How many iterations between ".".  Must be >= 2.
 
-# Only used while the call to new() is in scope!
+# Primarily used while the call to new() is in scope!
 my $FTPS_ERROR;
 
 
@@ -130,7 +130,7 @@ sub new {
      print STDERR "Server (port): $host ($port)\n\n";
   }
 
-  # Determines if we die if we will need to also write to the error log file ...
+  # Determines if we die if we will also need to write to the error log file ...
   my $dbg_flg = $die ? ( $debug == 2 ? 1 : 0 ) : $debug;
 
   return _croak_or_return (undef, $die, $dbg_flg, "Host undefined")  unless $host;
@@ -400,6 +400,9 @@ sub _open_data_channel {
   my $self = shift;
   my $host = shift;
   my $port = shift;
+
+  # Warning: also called by t/10-complex.t func check_for_pasv_issue(),
+  # so verify still works there if any significant changes are made here.
 
   my $socket;
   if ( ${*$self}{data_prot} eq DATA_PROT_PRIVATE ) {
@@ -1049,6 +1052,7 @@ sub _common_put {
 
 # On some servers this command always fails!  So no croak test!
 # It's also why supported gets called.
+# Just be aware of HELP issue (OverrideHELP option)
 sub alloc {
   my $self = shift;
   my $size = shift;
@@ -1241,7 +1245,7 @@ sub quot {
    my $self = shift;
    my $cmd  = shift;
 
-   my $cmd2  = uc ($cmd);
+   my $cmd2 = uc ($cmd);
    $cmd2 = $1  if ( $cmd2 =~ m/^\s*(\S+)(\s|$)/ );
 
    # The following FTP commands are known to open a data channel
@@ -1724,10 +1728,11 @@ sub command {
 # -----------------------------------------------------------------------------
 sub response {
   my $self = shift;
-  my ( $data, $code, $sep, $desc ) = ( "", CMD_ERROR, "-", "" );
 
   ${*$self}{last_ftp_msg} = "";   # Clear out the old message
   my $prefix = ( ref($self) eq "Net::FTPSSL" ) ? "<<< " : "SKT <<< ";
+
+  my ( $data, $code, $sep, $desc ) = ( "", CMD_ERROR, "-", "" );
 
   while ($sep eq "-") {
      if ( exists ${*$self}{next_ftp_msg} ) {
@@ -1761,39 +1766,29 @@ sub response {
           next;
        }
 
-#      $data = $self->getline();
-#      $data =~ m/^(\d+)(\-?)(.*)$/s;
-       $line =~ m/^(\d+)([-\s]?)(.*)$/s;
-
-       my $last_code = $code;
-       ($code, $sep, $desc) = ($1, $2, $3);
-
-       if ( $done && defined $sep ) {
+       if ( $done ) {
           # We read past the end of the current response into the next one ...
           _print_LOG ( $self, "Attempted to read past end of response! ($line)\n" ) if ${*$self}{debug};
           ${*$self}{next_ftp_msg} = $line;
           $remember = 1;
-          $code = $last_code;
           next;
        }
-       $code = $last_code  unless ( defined $code );
 
-       _print_LOG ( $self, $prefix . $line . "\n" ) if ${*$self}{debug};
-
-       ${*$self}{last_ftp_msg} .= "\n" if ($done);
+       if ( $line =~ m/^(\d+)([-\s]?)(.*)$/s ) {
+          ($code, $sep, $desc) = ($1, $2, $3);
+          $sep = ""  unless (defined $sep);
+       }
 
        ${*$self}{last_ftp_msg} .= $line;
+       _print_LOG ( $self, $prefix . $line . "\n" ) if ${*$self}{debug};
 
-       $done = 1  if (defined $sep && $sep ne '-');
-
-       ${*$self}{last_ftp_msg} .= "\n" unless ($done);
-     }
-
-     # Only true if this response message had CR's embeded in it!
-     unless (defined $sep) {
-        $sep = $done ? " " : "-";   # Final or middle response?
-     }
-  }
+       if ( $sep eq '-' ) {
+          ${*$self}{last_ftp_msg} .= "\n";       # Restore the internal <CR>.
+       } else {
+          $done = 1;            # The response is complete now.
+       }
+     }    # End for $line loop
+  }       # End while $sep loop
 
   return substr( $code, 0, 1 );     # The 1st digit of the code!
 }
@@ -1993,7 +1988,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.16
+=head1 VERSION 0.17
 
 =head1 SYNOPSIS
 
@@ -2088,12 +2083,6 @@ last message before it attempts to close the connection.  Allowing the server
 to know the client is going away.  This will cause I<$Net::FTPSSL::ERRSTR> to
 be set as well.
 
-B<SSL_Advanced> - Expects a reference to a hash.  This feature is totally
-unsupported.  It is only provided so you can attempt to use the more obscure
-options when start_SSL() is called.  If an option here conflicts with other
-options we would normally use, entries in this hash take precedence.  See
-I<IO::Socket::SSL> for these options.
-
 B<OverridePASV> - Some I<FTPS> servers sitting behind a firewall incorrectly
 return their local IP Address instead of their external IP Address used
 outside the firewall where the client is.  To use this option to correct this
@@ -2110,6 +2099,12 @@ This option supports three distinct modes to support your needs.  You can pass
 a reference to an array that lists all the B<FTP> commands your sever supports,
 you can set it to B<1> to say all commands are supported, or set it to B<0> to
 say none of the commands are supported.  See I<supported()> for more details.
+
+B<SSL_Advanced> - Expects a reference to a hash.  This feature is totally
+unsupported.  It is only provided so you can attempt to use the more obscure
+options when start_SSL() is called.  If an option here conflicts with other
+options we would normally use, entries in this hash take precedence.  See
+I<IO::Socket::SSL> for these options.
 
 =back
 
@@ -2130,6 +2125,24 @@ Use the given information to log into the FTPS server.
 
 This method breaks the connection to the FTPS server.  It will also close the
 file pointed to by option I<DebugLogFile>.
+
+=item force_epsv( [1/2] )
+
+Used to force B<EPSV> instead of B<PASV> when establishing a data channel.
+Once this method is called, it is imposible to swap back to B<PASV>.  This
+method should be called as soon as possible after you log in if B<EPSV> is
+required.
+
+It does this by sending "B<EPSV ALL>" to the server.  Afterwards the server
+will reject all B<EPTR>, B<PORT> and B<PASV> commands.
+
+After "B<EPSV ALL>" is sent, it will attempt to verify your choice of IP
+Protocol to use: B<1> or B<2> (v4 or v6).  The default is B<1>.  It will use
+the selected protocol for all future B<EPSV> calls.  If you need to change which
+protocol to use, you may call this function a second time to swap to the other
+B<EPSV> Protocol.
+
+This method returns true if it succeeds, or false if it fails.
 
 =item list( [DIRECTORY [, PATTERN]] )
 
@@ -2168,15 +2181,6 @@ Sets the file transfer mode to ASCII.  I<CR LF> transformations will be done.
 =item binary()
 
 Sets the file transfer mode to binary. No transformation will be done.
-
-=item get( REMOTE_FILE, [LOCAL_FILE] )
-
-Retrieves the I<REMOTE_FILE> from the ftps server. I<LOCAL_FILE> may be a
-filename or a filehandle.  Return B<undef> if it fails.
-
-If the option I<PreserveTimestamp> was used, and the FTPS server supports it,
-it will attempt to reset the timestamp on I<LOCAL_FILE> to the timestamp on
-I<REMOTE_FILE>.
 
 =item put( LOCAL_FILE, [REMOTE_FILE] )
 
@@ -2242,6 +2246,15 @@ I<PREFIX> with a different directory to drop the scratch file into.  This avoids
 forcing you to change into the requested directory first when you have multiple
 files to send out into multiple directories.
 
+=item get( REMOTE_FILE, [LOCAL_FILE] )
+
+Retrieves the I<REMOTE_FILE> from the ftps server. I<LOCAL_FILE> may be a
+filename or a filehandle.  Return B<undef> if it fails.
+
+If the option I<PreserveTimestamp> was used, and the FTPS server supports it,
+it will attempt to reset the timestamp on I<LOCAL_FILE> to the timestamp on
+I<REMOTE_FILE>.
+
 =item xget( REMOTE_FILE, [LOCAL_FILE, [PREFIX, [POSTFIX, [BODY]]]] )
 
 The inverse of I<xput>, where the file recognizer is on the client side.  The
@@ -2286,21 +2299,6 @@ It requires no action other than the server send an OK reply.
 
 Allows you to rename the file on the remote server.
 
-=item ccc( [ DataProtLevel ] )
-
-Sends the clear command channel request to the FTPS server.  If you provide the
-I<DataProtLevel>, it will change it from the current data protection level to
-this one before it sends the B<CCC> command.  After the B<CCC> command, the
-data channel protection level can not be changed again and will always remain
-at this setting.  Once you execute the B<CCC> request, you will have to create
-a new I<Net::FTPSSL> object to secure the command channel again.  I<Due
-to security concerns it is recommended that you do not use this method.>
-
-If the version of I<IO::Socket::SSL> you have installed is too old, this
-function will not work since I<stop_SSL> won't be defined (like in v1.08).  So 
-it is recommended that you be on at least I<version 1.18> or later if you plan
-on using this function.
-
 =item site( ARGS )
 
 Send a SITE command to the remote server and wait for a response.
@@ -2333,6 +2331,34 @@ for text files that the size returned may not match the file's actual size when
 the file is downloaded to your system in I<ASCII> mode.  This is an OS specific
 issue.  It will always match if you are using I<BINARY> mode.
 
+=item quot( CMD [,ARGS] )
+
+Send a command, that Net::FTPSSL does not directly support, to the remote
+server and wait for a response.  You are responsible for parsing anything
+you need from I<message()> yourself.
+
+Returns the most significant digit of the response code.  So it will ignore
+the B<Croak> request.
+
+B<WARNING> This call should only be used on commands that do not require
+data connections.  Misuse of this method can hang the connection if the
+internal list of FTP commands using a data channel is incomplete.
+
+=item ccc( [ DataProtLevel ] )
+
+Sends the clear command channel request to the FTPS server.  If you provide the
+I<DataProtLevel>, it will change it from the current data protection level to
+this one before it sends the B<CCC> command.  After the B<CCC> command, the
+data channel protection level can not be changed again and will always remain
+at this setting.  Once you execute the B<CCC> request, you will have to create
+a new I<Net::FTPSSL> object to secure the command channel again.  I<Due
+to security concerns it is recommended that you do not use this method.>
+
+If the version of I<IO::Socket::SSL> you have installed is too old, this
+function will not work since I<stop_SSL> won't be defined (like in v1.08).  So 
+it is recommended that you be on at least I<version 1.18> or later if you plan
+on using this function.
+
 =item supported( CMD [,SITE_OPT] )
 
 Returns TRUE if the remote server supports the given command.  I<CMD> must match
@@ -2351,19 +2377,6 @@ servers.  See the I<OverrideHELP> option in the constructor for how to do this.
 This method is used internally for conditional logic only when checking if the
 following I<FTP> commands are allowed: B<ALLO>, B<NOOP>, B<MFMT>, and B<MDTM>.
 
-=item quot( CMD [,ARGS] )
-
-Send a command, that Net::FTPSSL does not directly support, to the remote
-server and wait for a response.  You are responsible for parsing anything
-you need from I<message()> yourself.
-
-Returns the most significant digit of the response code.  So it will ignore
-the B<Croak> request.
-
-B<WARNING> This call should only be used on commands that do not require
-data connections.  Misuse of this method can hang the connection if the
-internal list of FTP commands using a data channel is incomplete.
-
 =item last_message() or message()
 
 Use either one to collect the last response from the FTPS server.  This is the
@@ -2379,21 +2392,6 @@ I<message> & I<last_message> B<are not> shared between instances!
 
 Returns the one digit status code associated with the last response from the
 FTPS server.
-
-=item force_epsv( [1/2] )
-
-Used to force B<EPSV> instead of B<PASV> when establishing a data channel.
-Once this method is called, it is imposible to swap back to B<PASV>.  It does
-this by sending "B<EPSV ALL>" to the server.  Afterwards the server will reject
-all B<EPTR>, B<PORT> and B<PASV> commands.
-
-After the "B<EPSV ALL>" is sent, it will attempt to verify your choice of
-IP Protocol to use B<1> or B<2> (v4 or v6).  The default is B<1>.  It will use
-that protocol for all future B<PASV> calls.  If you need to change which
-protocol to use, you may call this function a second time to swap to the other
-B<EPSV> Protocol.
-
-This method returns true if it succeeds, or false if it fails.
 
 =item set_croak( [1/0] )
 
@@ -2499,7 +2497,7 @@ collection of modules (libnet).
 
 Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
 and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
-L<http://search.cpan.org/~cleach/Net-FTPSSL-0.16/FTPSSL.pm>.
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.17/FTPSSL.pm>.
 
 Patches are appreciated when a log file and sample code are also provided.
 
@@ -2507,7 +2505,7 @@ Patches are appreciated when a log file and sample code are also provided.
 
 Copyright (c) 2005 Marco Dalla Stella. All rights reserved.
 
-Copyright (c) 2009, 2010 Curtis Leach. All rights reserved.
+Copyright (c) 2009 to 2011 Curtis Leach. All rights reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the same terms as Perl itself.
