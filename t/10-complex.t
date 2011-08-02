@@ -10,6 +10,10 @@
 use strict;
 use warnings;
 
+# Uncomment if you need to trace issues with IO::Socket:SSL methods as well.
+# Proper values are: debug0, debug1, debug2 & debug3.  3 is the most verbose!
+# use IO::Socket::SSL qw(debug3);
+
 use Test::More tests => 60;   # Also update skipper (one less)
 use File::Copy;
 
@@ -37,15 +41,15 @@ SKIP: {
 
     my( $address, $server, $port, $user, $pass, $dir, $mode, $data, $encrypt_mode, $psv_mode ); 
 
-    $address = ask2("Server address ( host[:port] )");
+    $address = ask2("Server address ( host[:port] )", undef, undef, $ENV{FTPSSL_SERVER});
     ( $server, $port ) = split( /:/, $address );
     # $port = 21 unless $port;   # Let FTPSSL provide the default port.
 
-    $user = ask2("\tUser", "anonymous");
+    $user = ask2("\tUser", "anonymous", undef, $ENV{FTPSSL_USER});
 
-    $pass = ask2("\tPassword [a space for no password]", "user\@localhost");
+    $pass = ask2("\tPassword [a space for no password]", "user\@localhost", undef, $ENV{FTPSSL_PWD});
 
-    $dir = ask2("\tDirectory", "<HOME>");
+    $dir = ask2("\tDirectory", "<HOME>", undef, $ENV{FTPSSL_DIR});
     $dir = "" if ($dir eq "<HOME>");   # Will ask server for it later on.
 
     $mode = ask("\tConnection mode (I)mplicit, (E)xplicit, or (C)lear.",
@@ -80,10 +84,11 @@ SKIP: {
 
     # This section initializes an unsupported feature to Net::FTPSSL.
     # Code is left here so that I can easily revisit it in the future if needed.
-    # That's why option SSL_Advanced is commented out below but left uncommented
-    # here.  Do not use this feature unless you absolutely have no choice!
+    # That's why option SSL_Client_Certificate is commented out for %ftps_opts
+    # below but left uncommented here.
+    # Do not use this feature unless you absolutely have no choice!
     my %advanced_hash = ( SSL_version => ($encrypt_mode ? "SSLv23" : "TLSv1"),
-                          Timeout => 99 );
+                          Timeout => 22 );
     # -----------------------------------------------------------
 
     my %callback_hash;
@@ -103,13 +108,13 @@ SKIP: {
 
     # print STDERR "\nNet-FTPSSL Version: " . $Net::FTPSSL::VERSION . "\n\n";
 
-    # Leave SSL_Advanced commented out ... Unsupported feature ...
+    # Leave SSL_Client_Certificate commented out ... Unsupported feature ...
     # This hash provides the basic info for all the FTPSSL connections
     # based on the user's answers above.
     my %ftps_opts = ( Port => $port, Encryption => $mode,
                       DataProtLevel => $data, useSSL => $encrypt_mode,
-                      # SSL_Advanced => \%advanced_hash,
-                      Debug => 1, Trace => 1 );
+                      # SSL_Client_Certificate => \%advanced_hash,
+                      Timeout => 121, Debug => 1, Trace => 1 );
 
     unless ( valid_credentials ( $server, \%ftps_opts, $user, $pass ) ) {
        skip("Can't log into the FTPS Server.  Skipping the remaining tests ...",
@@ -134,7 +139,7 @@ SKIP: {
     $ftps_opts{PreserveTimestamp} = 1;
     $ftps_opts{Croak} = 1;
 
-    print STDERR "\nStarting the real server test ...\n";
+    print STDERR "\n**** Starting the real server test ****\n";
 
     # Writes logs to STDERR which this script redirects to a file ...
     my $ftp = Net::FTPSSL->new( $server, \%ftps_opts );
@@ -335,7 +340,7 @@ SKIP: {
     ok( $ftp->delete($file), "deleting the test bin file on $server" );
 
     ok( $ftp->ascii (), 'putting FTP back in ascii mode' );
-    ok( $ftp->xget("FTPSSL.pm", './t/FTPSSL.pm_new.tst'), 'retrieving the ascii file again' );
+    ok( $ftp->xget("FTPSSL.pm", './t/FTPSSL.pm_new.tst'), 'retrieving the ascii file again via xget()' );
     ok( $ftp->delete("FTPSSL.pm"), "deleting the test file on $server" );
 
     # Now check out the before & after ASCII images
@@ -378,6 +383,9 @@ SKIP: {
     # -----------------------------------------
 
     $ftp->quit();
+
+    # Free so any context messages will still appear in the log file.
+    $ftp = undef;
 
     # Restore STDERR now that the tests are done!
     open (STDERR, ">&OLDERR");
@@ -483,10 +491,12 @@ sub check_for_pasv_issue {
 
    if ( $crypt ne CLR_CRYPT ) {
       $ftps->_pbsz ();
-      return (0)  unless ($ftps->prot ());
+      return (0)  unless ($ftps->_prot ());
    }
 
    my ($h, $p) = $ftps->_pasv ();
+
+   print STDERR "Calling _open_data_channel ($h, $p)\n";
 
    # Can we open up the returned data channel ?
    if ( $ftps->_open_data_channel ($h, $p) ) {
@@ -632,13 +642,15 @@ sub ask {
 
 # This version doesn't do an automatic upshift
 # Also provides a way to enter "" as a valid value!
+# The Alternate Default is from an optional environment variable
 sub ask2 {
   my $question = shift;
   my $default  = shift || "";
   my $values   = shift || "";
+  my $altdef   = shift || $default;
 
-  if ( $default ) {
-     diag ("\n$question (Default '$default') ? ");
+  if ( $altdef ) {
+     diag ("\n$question (Default '$altdef') ? ");
   } else {
      diag("\n$question ? ");
   }
@@ -649,9 +661,9 @@ sub ask2 {
   if ( $answer =~ m/^\s+$/ ) {
      $answer = "";    # Overriding any defaults ...
   } elsif ( ! $answer ) {
-     $answer = $default;
+     $answer = $altdef;
   } elsif ( $values && $answer !~ m/^$values$/ ) {
-     $answer = $default;   # Change invalid value to default answer!
+     $answer = $altdef;    # Change invalid value to default answer!
   }
 
   # diag ("ANS: [$answer]");

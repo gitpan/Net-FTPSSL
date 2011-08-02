@@ -2,8 +2,46 @@ Revision history for Perl extension Net::FTPSSL.
 
 Version - YYYY/MM/DD
 --------------------
+0.18 2011/07/29 08:30:00
+  - More fixes/clarifications to the POD text.
+  - Fixed minor wild card issue with LIST & NLST if "+" was in the file name.
+  - Added LocalAddr option to new().  Works against both the command channel
+    and the data channel.
+  - Added restart() function to be compatable with Net::FTP for restarts.
+  - Added ability to restart downloads/get() where previous attempt left off.
+  - Added ability to restart uploads/put() where the previous attempt left off.
+  - Added append() command [APPE], it also uses OFFSET, but doesn't send the
+    REST command to the server.
+  - Masks out the user name used when generating a log file.  Similar to how
+    this is already done for the password.  Except it must also hide it in the
+    response to USER & PASS.  Only masked when written to the log, message()
+    and last_message() still returns the user name unmasked in any response
+    string!
+  - Fixed a bug in t/10-complex.t and added optional environment variables
+    for some of the connection values to make it easier for me to quickly
+    rerun tests during development without having to key in ansers to questions
+    with no good default values over & over again.
+  - Added SSL_Client_Certificate to support client certificates on the data
+    channel as well as the command channel. Bug ID: 69327.
+  - Depreciated SSL_Advanced in favor of SSL_Client_Certificate.  SSL_Advanced
+    is now just an alias for SSL_Client_Certificate for backwards compatibility.
+    I just feel the new name better describes what we are trying to do with it
+    now that this feature is supported.
+  - Wrote t/20-certificate.t to test this out.  But this & t/10-complex.t
+    are probably incompatable in most settings.  Anyone else trying to use
+    this test case will have to modify this code to point to their certificate
+    and provide it's password, since I'm not going to publish my test
+    client certificate.
+  - Calls to command() now return a reference to this class so that you can
+    code something like: "if ($ftps->command("NOOP")->response() == CMD_OK)".
+    This should be compatible since it shouldn't be called externally, and
+    you should always be calling response() afterwards anyway.  It still calls
+    die if "Croak=>1" is used.  Response() will return CMD_ERROR should
+    command() have issues to avoid hangs.
+  - Modifed Net::FTPSSL to use the new command()->response() format internally.
+
 0.17 2011/01/03 08:30:00
-  - Fixed a subtle bug in response(), now tests if parse succeeded instead
+  - Fixed a subtle bug in response(), now tests if a parse succeeded instead
     of assuming it.  Allowed me to simplify this messy code quite a bit.
   - Reordered the methods in the POD to put some of the more relevant FTP
     commands closer to the top & the more obscure at the bottom to make
@@ -12,9 +50,10 @@ Version - YYYY/MM/DD
     off immediately after a successful login.  Also now using the same hash
     for all the connection attempts.  I really need to take the time to do
     further redesign this script to make it easier to troubleshoot.
-  - Fixed the smoke tester failures.  (They always answer no to the deeper test)
+  - Fixed the smoke tester failures.  (They always answer NO to the deeper test)
   - t/10-complex.t now checks if OverridePASV or OverrideHELP are needed against
     the test server & dynamically adds it for the test cases if needed.
+    Net::FTPSSL still can't dynamically figure this out for itself.
   - Added PASV/EPSV prompt to t/10-complex.t script instead of assuming PASV.
 
 0.16 2010/11/30 08:30:00
@@ -42,7 +81,7 @@ Version - YYYY/MM/DD
 
 0.15 2010/04/27 08:30:00
   - Fixes for Bug Id 53719.  Requested all internal calls to "ALLO" be
-    conditional since some server connectins die when it receives an "ALLO"
+    conditional since some server connections die when it receives an "ALLO"
     command.
   - Fixing the above bug uncovered an infinite loop if Croak was also turned on.
     Now _croak_or_return() doesn't try to close the connection if called by

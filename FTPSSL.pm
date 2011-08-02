@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : kral <kral at paranici dot org>
 # Created : 01 March 2005
-# Version : 0.17
+# Version : 0.18
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -24,7 +24,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.17";
+$VERSION = "0.18";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -79,27 +79,39 @@ sub new {
   my $host         = shift;
   my $arg          = (ref ($_[0]) eq "HASH") ? $_[0] : {@_};
 
-  my %ssl_args;    # Only referenced via $advanced.
+  # Using this feature is unsupported.  Use at own risk!
+  # This feature will overide normal options if tags conflict and
+  # applies to both the command and data channels!
+  # The main purpose of this option is to allow users to specify
+  # client certificates when their FTPS server requires them.
+  # From IO::Socket::SSL.
+  my %ssl_args;
+  if (ref ($arg->{SSL_Client_Certificate}) eq "HASH") {
+     %ssl_args = %{$arg->{SSL_Client_Certificate}}
+  } elsif (ref ($arg->{SSL_Advanced}) eq "HASH") {
+     %ssl_args = %{$arg->{SSL_Advanced}}    # Depreciated in v0.18
+  }
 
+  # Now onto processing the regular hash of arguments provided ...
   my $encrypt_mode = $arg->{Encryption} || EXP_CRYPT;
-  my $port         = $arg->{Port} || (($encrypt_mode eq IMP_CRYPT) ? 990 : 21);
-  my $debug        = $arg->{Debug} || 0;
-  my $trace        = $arg->{Trace} || 0;
-  my $timeout      = $arg->{Timeout} || 120;
+  my $port         = $arg->{Port}   || (($encrypt_mode eq IMP_CRYPT) ? 990 : 21);
+  my $debug        = $arg->{Debug}  || 0;
+  my $trace        = $arg->{Trace}  || 0;
+  my $timeout      = $ssl_args{Timeout} || $arg->{Timeout} || 120;
   my $buf_size     = $arg->{Buffer} || 10240;
   my $data_prot    = ($encrypt_mode eq CLR_CRYPT) ? DATA_PROT_CLEAR
                                  : ($arg->{DataProtLevel} || DATA_PROT_PRIVATE);
   my $use_ssl      = $arg->{useSSL} || 0;
-  my $die          = $arg->{Croak} || $arg->{Die};
+  my $die          = $arg->{Croak}  || $arg->{Die};
   my $pres_ts      = $arg->{PreserveTimestamp} || 0;
   my $use_logfile  = $debug && (defined $arg->{DebugLogFile} &&
                                 $arg->{DebugLogFile} ne "");
+  my $localaddr    = $arg->{LocalAddr};
 
-  # Using this feature is unsupported.  Use at own risk!
-  my $advanced     = (ref ($arg->{SSL_Advanced}) eq "HASH")
-                                   ? $arg->{SSL_Advanced} : \%ssl_args;
+  # Used to work arround FTPS servers behaving badly!
   my $pasvHost     = $arg->{OverridePASV};
   my $fixHelp      = $arg->{OverrideHELP};
+
 
   # Determine where to write the Debug info to ...
   my $pv = sprintf ("%s  [%vd]", $], $^V);   # The version of perl!
@@ -115,6 +127,8 @@ sub new {
         print $FTPS_ERROR "\nNet-FTPSSL Version: $VERSION\n\n";
         print $FTPS_ERROR "Perl: $pv,  OS: $^O\n\n";
         print $FTPS_ERROR "Server (port): $host ($port)\n\n";
+     } else {
+        print $FTPS_ERROR "\n\n";
      }
      $debug = 2;                  # Already know Debug is turned on ...
   } elsif ( $debug ) {
@@ -147,14 +161,16 @@ sub new {
            $data_prot ne DATA_PROT_CONFIDENTIAL &&
            $data_prot ne DATA_PROT_PRIVATE );
 
-  # We start with a clear connection, 'cause I don't know if the
-  # connection will be implicit or explicit or clear after all'.
-  my $socket = IO::Socket::INET->new (
-                         PeerAddr => $host,
-                         PeerPort => $port,
-                         Proto    => 'tcp',
-                         Timeout  => $timeout
-                         )
+  # We start with a clear connection, because I don't know if the
+  # connection will be implicit or explicit or remain clear after all.
+  my %socketArgs = (  PeerAddr => $host,
+                      PeerPort => $port,
+                      Proto    => 'tcp',
+                      Timeout  => $timeout
+                   );
+  $socketArgs{LocalAddr} = $localaddr  if (defined $localaddr);
+
+  my $socket = IO::Socket::INET->new ( %socketArgs )
                    or
             return _croak_or_return (undef, $die, $dbg_flg,
                                   "Can't open tcp connection! ($host:$port)");
@@ -182,15 +198,15 @@ sub new {
      # ------------------------------------------------------------------------
      # Only SSL_version & Timeout are supported.  All others are unsupported.
      # Doing this merge as a courtesy, so the regular options can be overridden
-     # by this advanced functionality.
+     # by the SSL_Client_Certificate functionality.
      # ------------------------------------------------------------------------
-     if (defined $advanced->{SSL_version}) {
-        $mode = $advanced->{SSL_version};      # Mode was overridden.
+     if (defined $ssl_args{SSL_version}) {
+        $mode = $ssl_args{SSL_version};        # Mode was overridden.
         $use_ssl = ( $mode !~ m/^TLSv1$/i );   # Reset in case it conflicts ...
      } else {
-        $advanced->{SSL_version} = $mode;      # Nothing overridden.
+        $ssl_args{SSL_version} = $mode;        # Nothing overridden.
      }
-     $advanced->{Timeout} = $timeout  unless (exists $advanced->{Timeout});
+     $ssl_args{Timeout} = $timeout  unless (exists $ssl_args{Timeout});
      # ------------------------------------------------------------------------
 
      if ( $encrypt_mode eq EXP_CRYPT ) {
@@ -203,7 +219,7 @@ sub new {
      }
 
      # Now transform the clear connection into a SSL one on our end.
-     $obj = $type->start_SSL( $socket, $advanced )
+     $obj = $type->start_SSL( $socket, %ssl_args )
                or return _croak_or_return ( $socket, undef,
                                       "$mode: " . IO::Socket::SSL::errstr () );
 
@@ -213,21 +229,10 @@ sub new {
      }
   }
 
-  # These options control the behaviour of the Net::FTPSSL class ...
-  ${*$obj}{Host}         = $host;
-  ${*$obj}{Crypt}        = $encrypt_mode;
-  ${*$obj}{debug}        = $debug;
-  ${*$obj}{trace}        = $trace;
-  ${*$obj}{timeout}      = $timeout;
-  ${*$obj}{buf_size}     = $buf_size;
-  ${*$obj}{type}         = MODE_ASCII;
-  ${*$obj}{data_prot}    = $data_prot;
-  ${*$obj}{Croak}        = $die;
-  ${*$obj}{FixPutTs}     = ${*$obj}{FixGetTs} = $pres_ts;
-  ${*$obj}{OverridePASV} = $pasvHost;
-  ${*$obj}{dcsc_mode}    = FTPS_PASV;
 
+  # --------------------------------------
   # Check if overriding "_help()" ...
+  # --------------------------------------
   if ( defined $fixHelp ) {
      my %helpHash;
      my %emptyHash;
@@ -248,14 +253,38 @@ sub new {
      ${*$obj}{help_SITE_found} = \%emptyHash;
      ${*$obj}{help_SITE_msg} = ${*$obj}{help_cmds_msg};
   }
+  # --------------------------------------
   # End overriding "_help()" ...
+  # --------------------------------------
+
+  # These options control the behaviour of the Net::FTPSSL class ...
+  ${*$obj}{Host}         = $host;
+  ${*$obj}{Crypt}        = $encrypt_mode;
+  ${*$obj}{debug}        = $debug;
+  ${*$obj}{trace}        = $trace;
+  ${*$obj}{buf_size}     = $buf_size;
+  ${*$obj}{type}         = MODE_ASCII;
+  ${*$obj}{data_prot}    = $data_prot;
+  ${*$obj}{Croak}        = $die;
+  ${*$obj}{FixPutTs}     = ${*$obj}{FixGetTs} = $pres_ts;
+  ${*$obj}{OverridePASV} = $pasvHost;
+  ${*$obj}{dcsc_mode}    = FTPS_PASV;
+  ${*$obj}{mySocketOpts} = \%socketArgs;
 
   ${*$obj}{ftpssl_filehandle} = $FTPS_ERROR  if ( $debug == 2 );
   $FTPS_ERROR = undef;
 
-  # Print out the details of the SSL object.  Set to TRUE only for debugging!
-  if ( $debug && ref ($arg->{SSL_Advanced}) eq "HASH" ) {
-     $obj->_debug_print_hash ( $host, $port, $encrypt_mode );
+  # Must be last for debug to work correctly ...
+  if ( (ref ($arg->{SSL_Client_Certificate}) eq "HASH") ||
+       (ref ($arg->{SSL_Advanced}) eq "HASH") ) {
+     # Reuse the command channel context ...
+     my %ssl_reuse = ( SSL_reuse_ctx => ${*$obj}{_SSL_ctx} );
+     ${*$obj}{myContext}   = \%ssl_reuse;
+
+     # Print out the details of the SSL object.  It's TRUE only for debugging!
+     if ( $debug ) {
+        $obj->_debug_print_hash ( $host, $port, $encrypt_mode );
+     }
   }
 
   return $obj;
@@ -267,8 +296,14 @@ sub new {
 sub login {
   my ( $self, $user, $pass ) = @_;
 
+  ${*$self}{_hide_value_in_response_} = $user;
+  ${*$self}{_mask_value_in_response_} = "++++++";
+
   my $logged_on = $self->_test_croak ( $self->_user ($user) &&
                                        $self->_passwd ($pass) );
+
+  delete ( ${*$self}{_hide_value_in_response_} );
+  delete ( ${*$self}{_mask_value_in_response_} );
 
   if ( $logged_on ) {
      if ( ${*$self}{FixPutTs} && ! $self->supported ("MFMT") ) {
@@ -303,8 +338,9 @@ sub force_epsv {
   # Don't resend the command to the FTPS server if it was sent before!
   if ( ${*$self}{dcsc_mode} != FTPS_EPSV_1 &&
        ${*$self}{dcsc_mode} != FTPS_EPSV_2 ) {
-    $self->command("EPSV", "ALL");
-    unless ($self->response () == CMD_OK) { return $self->_croak_or_return (); }
+    unless ($self->command ("EPSV", "ALL")->response () == CMD_OK) {
+       return $self->_croak_or_return ();
+    }
   }
 
   # Now that only EPSV is supported, remember which one was requested ...
@@ -312,8 +348,9 @@ sub force_epsv {
   ${*$self}{dcsc_mode} = ($epsv_mode eq "1") ? FTPS_EPSV_1 : FTPS_EPSV_2;
 
   # Now check out if the requested EPSV mode was actually supported ...
-  $self->command("EPSV", $epsv_mode);
-  unless ($self->response () == CMD_OK) { return $self->_croak_or_return (); }
+  unless ($self->command ("EPSV", $epsv_mode)->response () == CMD_OK) {
+     return $self->_croak_or_return ();
+  }
 
   # So the server will release the returned port!
   $self->_abort();
@@ -324,17 +361,15 @@ sub force_epsv {
 sub _pasv {
   my $self = shift;
 
-  $self->command("PASV");
-
-  # my $msg = $self->getline();
-  # $self->_print_DBG ( "<<< " . $msg );
-  # unless ( substr( $msg, 0, 1 ) == CMD_OK ) { return undef; }
-
-  unless ( $self->response () == CMD_OK ) { return $self->_croak_or_return (); }
-  my $msg = $self->last_message ();
+  unless ( $self->command ("PASV")->response () == CMD_OK ) {
+     return $self->_croak_or_return ();
+  }
 
   # [227] [Entering Passive Mode] ([h1,h2,h3,h4,p1,p2]).
-  $msg =~ m/(\d+)\s(.*)\(((\d+,?)+)\)\.?/;
+  my $msg = $self->last_message ();
+  unless ($msg =~ m/(\d+)\s(.*)\(((\d+,?)+)\)\.?/) {
+     return $self->_croak_or_return (0, "Can't parse the PASV response.");
+  }
 
   my @address = split( /,/, $3 );
 
@@ -355,12 +390,13 @@ sub _epsv {
   my $ipver = shift;
 
   $self->command ("EPSV", ($ipver == FTPS_EPSV_1) ? "1" : "2");
-
   unless ( $self->response () == CMD_OK ) { return $self->_croak_or_return (); }
-  my $msg = $self->last_message ();
 
   # [227] [Entering Extended Passive Mode] (|||<port>|).
-  $msg =~ m/[(](.)(.)(.)(\d+)(.)[)]/;
+  my $msg = $self->last_message ();
+  unless ($msg =~ m/[(](.)(.)(.)(\d+)(.)[)]/) {
+     return $self->_croak_or_return (0, "Can't parse the EPSV response.");
+  }
 
   my ($s1, $s2, $s3, $port, $s4) = ($1, $2, $3, $4, $5);
 
@@ -392,6 +428,8 @@ sub prep_data_channel {
      return $self->_croak_or_return (0, "Currently doesn't support $err when requesting the data channel port to use!");
   }
 
+  $self->_print_DBG ("--- Host ($host)  Port ($port)\n");
+
   # Returns if the data channel was established or not ...
   return ( $self->_open_data_channel ($host, $port) );
 }
@@ -404,6 +442,11 @@ sub _open_data_channel {
   # Warning: also called by t/10-complex.t func check_for_pasv_issue(),
   # so verify still works there if any significant changes are made here.
 
+  # We don't care about any context features here, only in _get_data_channel().
+  # You can't apply these features until after the command using the data
+  # channel has been sent to the FTPS server and the FTPS server responds
+  # to the socket you are creating below!
+
   my $socket;
   if ( ${*$self}{data_prot} eq DATA_PROT_PRIVATE ) {
      $socket = Net::SSLeay::Handle->make_socket( $host, $port )
@@ -411,10 +454,12 @@ sub _open_data_channel {
                            "Can't open private data connection to $host:$port");
 
   } elsif ( ${*$self}{data_prot} eq DATA_PROT_CLEAR ) {
-     $socket = IO::Socket::INET->new( PeerAddr => $host, PeerPort => $port,
-                                      Proto => 'tcp',
-                                      Timeout => ${*$self}{timeout} )
-               or return $self->_croak_or_return (0,
+     my %socketArgs = %{${*$self}{mySocketOpts}};
+     $socketArgs{PeerAddr} = $host;
+     $socketArgs{PeerPort} = $port;
+
+     $socket = IO::Socket::INET->new( %socketArgs ) or
+                  return $self->_croak_or_return (0,
                              "Can't open clear data connection to $host:$port");
 
   } else {
@@ -430,8 +475,18 @@ sub _open_data_channel {
 sub _get_data_channel {
    my $self = shift;
 
+   # $self->_debug_print_hash ("host", "port", ${*$self}{data_prot}, ${*$self}{data_ch});
+
    my $io;
-   if ( ${*$self}{data_prot} eq DATA_PROT_PRIVATE ) {
+   if ( ${*$self}{data_prot} eq DATA_PROT_PRIVATE && exists (${*$self}{myContext}) ) {
+      my %ssl_opts = %{${*$self}{myContext}};
+      my $mode = $ssl_opts{SSL_version};
+
+      $io = IO::Socket::SSL->start_SSL ( ${*$self}{data_ch}, \%ssl_opts )
+               or return _croak_or_return ( $io, undef,
+                                      "$mode: " . IO::Socket::SSL::errstr () );
+
+   } elsif ( ${*$self}{data_prot} eq DATA_PROT_PRIVATE ) {
       $io = IO::Handle->new ();
       tie ( *$io, "Net::SSLeay::Handle", ${*$self}{data_ch} );
 
@@ -444,6 +499,8 @@ sub _get_data_channel {
    }
 
    $io->autoflush (1);
+
+   # $self->_debug_print_hash ("host", "port", ${*$self}{data_prot}, $io);
 
    return ( $io );
 }
@@ -523,7 +580,7 @@ sub list {
      my $p = $pattern;   # So can display original pattern later on.
 
      # Convert from shell wild cards into a perl regular expression ...
-     $pattern =~ s/[.]/\\./g;
+     $pattern =~ s/([.+])/\\$1/g;
      $pattern =~ s/[?]/./g;
 
      if ( $nlst_flg ) {
@@ -568,10 +625,159 @@ sub list {
   return $dati ? split( /\n/, $dati ) : ();
 }
 
+sub _get_local_file_size {
+  my $self      = shift;
+  my $file_name = shift;
+
+  # Return the trivial cases ...
+  return (0) unless ( -f $file_name);
+  return (-s $file_name) if ( ${*$self}{type} eq MODE_BINARY );
+
+  # If we get here, we know we are transfering the file in ASCII mode ...
+  my $fd;
+  unless ( open( $fd, "< $file_name" ) ) {
+     return $self->_croak_or_return(0,
+                             "Can't open file in ASCII mode! ($file_name) $!");
+  }
+
+  my ($len, $offset) = (0, 0);
+  my $data;
+  my $size = ${*$self}{buf_size} || 2048;
+
+  while ( $len = sysread ( $fd, $data, $size ) ) {
+    # print STDERR "Line: ($len, $data)\n";
+    $data =~ s/\n/\015\012/g;
+    $len = length ($data);
+    $offset += $len;
+  }
+
+  unless ( defined $len ) {
+    unless ( $! == EINTR ) {
+       return $self->_croak_or_return (0,
+                                "System read error on calculating OFFSET: $!");
+    }
+  }
+
+  close ($fd);
+
+  return ($offset);
+}
+
+sub _get_local_file_truncate {
+  my $self      = shift;
+  my $file_name = shift;
+  my $offset    = shift;    # Value > 0.
+
+  my $max_offset = $self->_get_local_file_size ( $file_name );
+  return (undef)  unless ( defined $offset );
+
+  if ( $offset > $max_offset ) {
+    return $self->_croak_or_return (0,
+                "OFFSET ($offset) is larger than the local file ($max_offset)");
+  }
+
+  # Exactly the size of the file ...
+  return ( $offset )  if ( $offset == $max_offset );
+
+  # It's smaller & non-zero, so now we must truncate the local file ...
+  my $fd;
+  unless ( open( $fd, "+< $file_name" ) ) {
+     return $self->_croak_or_return(0,
+                        "Can't open file in read/write mode! ($file_name): $!");
+  }
+
+  my $pos = 0;
+  if ( ${*$self}{type} eq MODE_BINARY ) {
+     unless ( binmode $fd ) {
+      return $self->_croak_or_return(0, "Can't set binary mode to local file!");
+     }
+     $pos = $offset;
+
+  } else {
+     # ASCII Mode ...
+     # For some OS, $off & $pos are always the same,
+     # while for other OS they differ once the 1st <CR>
+     # was hit!
+     my ($len, $off) = (0, 0);
+     my $data;
+     my $size = ${*$self}{buf_size} || 2048;
+
+     $size = $offset  if ( $size > $offset );
+
+     while ( $len = sysread ( $fd, $data, $size ) ) {
+       # print STDERR "Line: ($len, $data)\n";
+       my $cr_only = ($data eq "\n");
+       $data =~ s/\n/\015\012/g;
+       $off += length ($data);
+       my $diff = $offset - $off;
+
+       # The offset was between the \015 & \012
+       # (Bogus for a lot of OS, so must fix offset one char smaller.)
+       if ( $diff == -1 && $cr_only ) {
+          my $old = $offset--;
+          $self->_print_DBG ("<<+ 222 HOT FIX  ==> Offset ($old ==> $offset) "
+                             . "Since can't truncate between \\015 & \\012 "
+                             . "in ASCII mode!\n");
+          # Use the last $pos value, no need to recalculate it ...
+          last;
+       }
+
+       # Found the requested offset ...
+       if ( $diff == 0 ) {
+          $pos = sysseek ( $fd, 0, 1 );  # Current position in the file
+          last;
+       }
+
+       # Still more data to read ...
+       if ( $diff > 0 ) {
+          $pos = sysseek ( $fd, 0, 1 );  # Current position in the file
+          $size = $diff  if ( $size > $diff );
+
+       # Read past my offset value ... So re-read the last line again
+       # with a smaller buffer size!
+       } else {
+          $pos = sysseek ( $fd, $pos, 0 );  # The previous position in the file
+          $off -= length ($data);
+          $size += $diff;    # Diff is negative here ...
+       }
+
+       last  unless ($pos);
+     }  # End while ...
+
+     unless ( defined $len ) {
+       unless ( $! == EINTR ) {
+          return $self->_croak_or_return (0,
+                                "System read error on calculating OFFSET: $!");
+       }
+     }
+  }   # End else ASCII ...
+
+  unless ($pos) { 
+     return $self->_croak_or_return (0,
+                                "System seek error before Truncation: $!");
+  }
+
+  unless ( truncate ( $fd, $pos ) ) {
+     return $self->_croak_or_return (0, "Truncate File Error: $!");
+  }
+
+  close ( $fd );
+
+  return ( $offset );
+}
+
 sub get {
   my $self     = shift;
   my $file_rem = shift;
   my $file_loc = shift;
+  my $offset   = shift || ${*$self}{net_ftpssl_rest_offset} || 0;
+
+  # Clear out this messy restart() cluge for next time ...
+  delete ( ${*$self}{net_ftpssl_rest_offset} );
+
+  if ( $offset < -1 ) {
+    return $self->_croak_or_return(0, "Invalid file offset ($offset)!");
+  }
 
   my ( $size, $localfd );
   my $close_file = 0;
@@ -583,11 +789,27 @@ sub get {
   $size = ${*$self}{buf_size} || 2048;
 
   if ( ref($file_loc) && ref($file_loc) eq "GLOB" ) {
+    if ( $offset == -1 ) {
+      return $self->_croak_or_return(0,
+                            "Invalid file offset ($offset) for a file handle!");
+    }
     $localfd = \*$file_loc;
 
   } else {
-    unless ( open( $localfd, "> $file_loc" ) ) {
-      return $self->_croak_or_return(0, "Can't create local file! ($file_loc)");
+    # Calculate the file offset to send to the FTPS server via REST ...
+    if ($offset == -1) {
+      $offset = $self->_get_local_file_size ($file_loc);
+      return (undef)  unless (defined $offset);
+    } elsif ($offset) {
+      $offset = $self->_get_local_file_truncate ($file_loc, $offset);
+      return (undef)  unless (defined $offset);
+    }
+
+    # Now we can open the file we need to write to ...
+    my $mode = ($offset) ? ">>" : ">";
+    unless ( open( $localfd, "$mode $file_loc" ) ) {
+      return $self->_croak_or_return(0,
+                             "Can't create/open local file! ($mode $file_loc)");
     }
     $close_file = 1;
   }
@@ -597,7 +819,7 @@ sub get {
     unless ( binmode $localfd ) {
       if ( $close_file ) {
          close ($localfd);
-         unlink ($file_loc);
+         unlink ($file_loc) unless ($offset);
       }
       return $self->_croak_or_return(0, "Can't set binary mode to local file!");
     }
@@ -607,7 +829,7 @@ sub get {
   unless ( $self->prep_data_channel() ) {
     if ( $close_file ) {
        close ($localfd);
-       unlink ($file_loc);
+       unlink ($file_loc) unless ($offset);
     }
     return undef;    # Already decided not to call croak if you get here!
   }
@@ -619,10 +841,17 @@ sub get {
 
 
   # Check if the "get" failed ...
-  unless ( $self->_retr($file_rem) ) {
+  my $rest = ($offset) ? $self->_rest ($offset) : 1;
+  unless ( $rest && $self->_retr($file_rem) ) {
      if ($close_file) {
         close ($localfd);
-        unlink ($file_loc);
+        unlink ($file_loc) unless ($offset);
+     }
+
+     if ( $offset && $rest ) {
+        my $msg = $self->last_message ();
+        $self->_rest (0);                  # Must clear out on failure!
+        ${*$self}{last_ftp_msg} = $msg;    # Restore original error message!
      }
 
      return $self->_croak_or_return ();
@@ -634,7 +863,7 @@ sub get {
   unless ( defined $io ) {
      if ( $close_file ) {
         close ($localfd);
-        unlink ($file_loc);
+        unlink ($file_loc) unless ($offset);
      }
      return undef;   # Already decided not to call croak if you get here!
   }
@@ -733,6 +962,17 @@ sub get {
 
 
 sub put {               # Regular put (STOR command)
+  my $self = shift;
+  my ($resp, $msg1, $msg2, $requested_file_name, $tm) = $self->_common_put (@_);
+
+  if ( $resp && ${*$self}{FixPutTs} && defined $tm ) {
+     $self->_mfmt ($tm, $requested_file_name);
+  }
+
+  return ( $resp );
+}
+
+sub append {            # Append put (APPE command)
   my $self = shift;
   my ($resp, $msg1, $msg2, $requested_file_name, $tm) = $self->_common_put (@_);
 
@@ -905,10 +1145,14 @@ sub xget {              # A variant of the regular get (RETR command)
 
    my $scratch_name = $self->_get_scratch_file ( $prefix, $body, $postfix,
                                                  $file_loc );
-   return undef  unless ( $scratch_name );
+   return undef  unless ($scratch_name);
+
+   if (defined ${*$self}{net_ftpssl_rest_offset}) {
+      return $self->_croak_or_return (0, "Can't call restart() before xget()!");
+   }
 
    # In this case, we can die if we must, no required post work here ...
-   my $resp = $self->get ( $file_rem, $scratch_name );
+   my $resp = $self->get ( $file_rem, $scratch_name, undef );
 
    # Make it visisble to the local file recognizer on success ...
    if ( $resp ) {
@@ -921,33 +1165,80 @@ sub xget {              # A variant of the regular get (RETR command)
    return ( $self->_test_croak ( $resp ) );
 }
 
+sub _put_offset_fix {
+  my $self     = shift;
+  my $offset   = shift;
+  my $len      = shift;
+  my $data     = shift;
+
+  # Determine if we can send any of this data to the server ...
+  if ( $offset >= $len ) {
+    # Can't send anything form the data buffer this time ...
+    $offset -= $len;      # Result is >= 0
+    $len = 0;
+    $data = "";
+
+  } elsif ( $offset ) {
+    # Sending a partial data buffer, stripping off leading chars ...
+    my $p = "." x $offset;
+    $data =~ s/^$p//s;    # Use option "s" since $data has "\n" in it.
+    $len -= $offset;      # Result is >= 0
+    $offset = 0;
+  }
+
+  return ($offset, $len, $data);
+}
+
 sub _common_put {
   my $self     = shift;
   my $file_loc = shift;
   my $file_rem = shift;
+  my $offset   = shift || ${*$self}{net_ftpssl_rest_offset} || 0;
+
+  # Clear out this messy restart() cluge for next time ...
+  delete ( ${*$self}{net_ftpssl_rest_offset} );
+
+  if ( ref($file_loc) eq "GLOB" && ! $file_rem ) {
+    return $self->_croak_or_return (0, "When you pass a stream, you must specify the remote filename.");
+  }
+
+  unless ($file_rem) {
+    $file_rem = basename ($file_loc);
+  }
+
+  if ( $offset < -1 ) {
+    return $self->_croak_or_return(0, "Invalid file offset ($offset)!");
+  }
+
+  # Find out which of 4 "put" functions called me ...
+  my $func = (caller(1))[3] || ":unknown";
+  $func =~ m/:([^:]+)$/;
+  $func = $1;
+
+  if ( $offset && $func ne "put" && $func ne "append" ) {
+    return $self->_croak_or_return(0, "Function $func() doesn't support RESTart.");
+  }
+
+  if ( $offset == -1 ) {
+    $offset = $self->size ($file_rem);
+    unless ( defined $offset ) {
+       return (undef);       # Already did croak test in size().
+    }
+  }
 
   my ( $size, $localfd );
   my $close_file = 0;
-
-  # Find out which of 3 "put" functions called me ...
-  (caller(1))[3] =~ m/:([^:]+)$/;
-  my $func = $1;
 
   $size = ${*$self}{buf_size} || 2048;
 
   if ( ref($file_loc) eq "GLOB" ) {
     $localfd = \*$file_loc;
-    return $self->_croak_or_return (0, "When you pass a stream, you must specify the remote filename.")
-         unless $file_rem;
 
   } else {
     unless ( open( $localfd, "< $file_loc" ) ) {
       return $self->_croak_or_return (0, "Can't open local file! ($file_loc)");
     }
     $close_file = 1;
-    unless ($file_rem) {
-      $file_rem = basename($file_loc);
-    }
   }
 
   my $fix_cr_issue = 1;
@@ -973,11 +1264,31 @@ sub _common_put {
 
   delete ${*$self}{alloc_size};
 
+  # Issue the correct "put" request ...
+  my ($response, $restart) = (0, 1);
+  if ( $func eq "uput" ) {
+     $response = $self->_stou ($file_rem);
+  } elsif ( $func eq "xput" )  {
+     $response = $self->_stor ($file_rem);
+  } elsif ( $func eq "put" )  {
+     $restart = ($offset) ? $self->_rest ($offset) : 1;
+     $response = $self->_stor ($file_rem);
+  } elsif ( $func eq "append" )  {
+     # Just uses OFFSET, doesn't send REST out.
+     $response = $self->_appe ($file_rem);
+  }
+
   # If the "put" request fails ...
-  unless ( $func eq "uput" ? $self->_stou($file_rem) : $self->_stor($file_rem) ) {
+  unless ($restart && $response) {
      close ($localfd)  if ($close_file);
+     if ( $restart && $offset && $func eq "get" ) {
+       $self->_rest (0);
+     }
      return ( $self->_croak_or_return (), undef, undef, $file_rem, undef );
   }
+
+  # The "REST" command doesn't affect file streams ...
+  $offset = 0  unless ($close_file);
 
   my $put_msg = $self->last_message ();
 
@@ -1007,6 +1318,11 @@ sub _common_put {
        $len = length ($data);
     }
 
+    # Determine if we can send any of this data to the server ...
+    if ( $offset ) {
+       ($offset, $len, $data) = $self->_put_offset_fix ( $offset, $len, $data );
+    }
+
     print STDERR "."  if (${*$self}{trace} && ($cnt % TRACE_MOD) == 0);
     ++$cnt;
 
@@ -1015,7 +1331,8 @@ sub _common_put {
        return $self->_croak_or_return (0, "System write error on $func(): $!")
            unless (defined $written);
     }
-  }
+  }    # End while sysread() loop!
+
 
   # Process trailing call back info if present.
   my $trail;
@@ -1025,9 +1342,17 @@ sub _common_put {
        $trail =~ s/\n/\015\012/g;
        $len = length ($trail);
     }
-    $written = syswrite $io, $trail, $len;
-    return $self->_croak_or_return (0, "System write error on $func(): $!")
-        unless (defined $written);
+
+    # Determine if we can send any of this data to the server ...
+    if ( $offset ) {
+       ($offset, $len, $data) = $self->_put_offset_fix ( $offset, $len, $data );
+    }
+
+    if ( $len > 0 ) {
+      $written = syswrite $io, $trail, $len;
+      return $self->_croak_or_return (0, "System write error on $func(): $!")
+           unless (defined $written);
+    }
   }
 
   print STDERR ". done! (" . $self->_fmt_num ($total) . " byte(s))\n"  if (${*$self}{trace});
@@ -1036,7 +1361,7 @@ sub _common_put {
   if ($close_file) {
      close ($localfd);
      if ( ${*$self}{FixPutTs} ) {
-        $tm = (stat ($file_loc))[9];   # The local file's timestamp!
+        $tm = (stat ($file_loc))[9];   # Get's the local file's timestamp!
      }
   }
 
@@ -1049,6 +1374,7 @@ sub _common_put {
 
   return ( 1, $put_msg, $self->last_message (), $file_rem, $tm );
 }
+
 
 # On some servers this command always fails!  So no croak test!
 # It's also why supported gets called.
@@ -1070,22 +1396,19 @@ sub alloc {
 
 sub delete {
   my $self = shift;
-  $self->command( "DELE", @_ );
-  return ( $self->_test_croak ($self->response == CMD_OK) );
+  return ($self->_test_croak ($self->command("DELE", @_)->response == CMD_OK));
 }
 
 sub auth {
   my $self = shift;
-  $self->command( "AUTH", "TLS" );
-  return ( $self->_test_croak ($self->response == CMD_OK) );
+  return ($self->_test_croak ($self->command("AUTH", "TLS")->response == CMD_OK));
 }
 
 sub pwd {
   my $self = shift;
   my $path;
 
-  $self->command("PWD");
-  $self->response();
+  $self->command("PWD")->response();
 
   if ( ${*$self}{last_ftp_msg} =~ /\"(.*)\".*/ )
   {
@@ -1101,14 +1424,12 @@ sub pwd {
 
 sub cwd {
   my $self = shift;
-  $self->command( "CWD", @_ );
-  return ( $self->_test_croak ($self->response == CMD_OK) );
+  return ( $self->_test_croak ($self->command("CWD", @_)->response == CMD_OK) );
 }
 
 sub noop {
   my $self = shift;
-  $self->command("NOOP");
-  return ( $self->_test_croak ($self->response == CMD_OK) );
+  return ( $self->_test_croak ($self->command("NOOP")->response() == CMD_OK) );
 }
 
 sub rename {
@@ -1122,8 +1443,7 @@ sub rename {
 
 sub cdup {
   my $self = shift;
-  $self->command("CDUP");
-  return ( $self->_test_croak ($self->response == CMD_OK) );
+  return ( $self->_test_croak ($self->command("CDUP")->response() == CMD_OK) );
 }
 
 # TODO: Make mkdir() working with recursion.
@@ -1145,8 +1465,7 @@ sub rmdir {
 sub site {
   my $self = shift;
 
-  $self->command("SITE", @_);
-  return ( $self->_test_croak ($self->response == CMD_OK) );
+  return ($self->_test_croak ($self->command("SITE", @_)->response == CMD_OK));
 }
 
 # A true boolean func, should never call croak!
@@ -1204,8 +1523,7 @@ sub ccc {
    my $ccc_fix_cmd = $self->supported ("NOOP") ? "NOOP" : "PWD";
 
    # Request that just the commnad channel go clear ...
-   $self->command ("CCC");
-   unless ( $self->response () == CMD_OK ) {
+   unless ( $self->command ("CCC")->response () == CMD_OK ) {
       return $self->_croak_or_return ();
    }
    ${*$self}{Crypt} = CLR_CRYPT;
@@ -1226,11 +1544,11 @@ sub ccc {
    ${*$self}{_SSL_opened} = 0;      # To get rid of warning on quit ...
 
    # This is a hack, but seems to resolve the command channel corruption
-   # problem where 1st command afer CCC may fail or look strange ...
+   # problem where 1st command or two afer CCC may fail or look strange ...
+   # I've even caught it a few times sending back 2 independant responses.
    my $ok = CMD_ERROR;
    foreach ( 1...3 ) {
-      $self->command ($ccc_fix_cmd);
-      $ok = $self->response ();
+      $ok = $self->command ($ccc_fix_cmd)->response ();
       last  if ( $ok == CMD_OK );
    }
 
@@ -1267,8 +1585,7 @@ sub quot {
       return (CMD_REJECT);
    }
 
-   $self->command ($cmd, @_);
-   return ($self->response ());
+   return ( $self->command ($cmd, @_)->response () );
 }
 
 #-----------------------------------------------------------------------
@@ -1293,30 +1610,27 @@ sub binary {
 
 sub _user {
   my $self = shift;
-  $self->command( "USER", @_ );
-  my $resp = $self->response ();
+  my $resp = $self->command ( "USER", @_ )->response ();
   return ( $resp == CMD_OK || $resp == CMD_MORE );
 }
 
 sub _passwd {
   my $self = shift;
-  $self->command( "PASS", @_ );
-  my $resp = $self->response ();
+  my $resp = $self->command ( "PASS", @_ )->response ();
   return ( $resp == CMD_OK || $resp == CMD_MORE );
 }
 
 sub _quit {
   my $self = shift;
-  $self->command("QUIT");
-  return ( $self->response () == CMD_OK );
+  return ( $self->command ("QUIT")->response () == CMD_OK );
 }
 
 sub _prot {
   my $self = shift;
   my $opt = shift || ${*$self}{data_prot};
 
-  $self->command( "PROT", $opt );     # C, S, E or P.
-  my $resp = ( $self->response () == CMD_OK );
+  # C, S, E or P.
+  my $resp = ( $self->command ( "PROT", $opt )->response () == CMD_OK );
 
   # Check if someone changed the data channel protection mode ...
   if ($resp && $opt ne ${*$self}{data_prot}) {
@@ -1326,7 +1640,7 @@ sub _prot {
   return ( $resp );
 }
 
-# Depreciated, only present to make backwards compatable with v0.05 & earlier.
+# Depreciated, only present to make backwards compatible with v0.05 & earlier.
 sub _protp {
   my $self = shift;
   return ($self->_prot (DATA_PROT_PRIVATE));
@@ -1334,68 +1648,67 @@ sub _protp {
 
 sub _pbsz {
   my $self = shift;
-  $self->command( "PBSZ", "0" );
-  return ( $self->response == CMD_OK );
+  return ( $self->command ( "PBSZ", "0" )->response () == CMD_OK );
 }
 
 sub _nlst {
   my $self = shift;
-  $self->command( "NLST", @_ );
-  return ( $self->response == CMD_INFO );
+  return ( $self->command ( "NLST", @_ )->response () == CMD_INFO );
 }
 
 sub _list {
   my $self = shift;
-  $self->command( "LIST", @_ );
-  return ( $self->response == CMD_INFO );
+  return ( $self->command ( "LIST", @_ )->response () == CMD_INFO );
 }
 
 sub _type {
   my $self = shift;
-  $self->command( "TYPE", @_ );
-  return ( $self->response == CMD_OK );
+  return ( $self->command ( "TYPE", @_ )->response () == CMD_OK );
+}
+
+sub _rest {
+  my $self = shift;
+  return ( $self->command ( "REST", @_ )->response () == CMD_MORE );
 }
 
 sub _retr {
   my $self = shift;
-  $self->command( "RETR", @_ );
-  return ( $self->response == CMD_INFO );
+  return ( $self->command ( "RETR", @_ )->response () == CMD_INFO );
 }
 
 sub _stor {
   my $self = shift;
-  $self->command( "STOR", @_ );
-  return ( $self->response == CMD_INFO );
+  return ( $self->command ( "STOR", @_ )->response () == CMD_INFO );
+}
+
+sub _appe {
+  my $self = shift;
+  return ( $self->command ( "APPE", @_ )->response () == CMD_INFO );
 }
 
 sub _stou {
   my $self = shift;
-  $self->command( "STOU", @_ );
-  return ( $self->response == CMD_INFO );
+  return ( $self->command ( "STOU", @_ )->response () == CMD_INFO );
 }
 
 sub _abort {
   my $self = shift;
-  $self->command("ABOR");
-  return ( $self->response == CMD_OK );
+  return ( $self->command ("ABOR")->response () == CMD_OK );
 }
 
 sub _alloc {
   my $self = shift;
-  $self->command( "ALLO", @_ );
-  return ( $self->response == CMD_OK );
+  return ( $self->command ( "ALLO", @_ )->response () == CMD_OK );
 }
 
 sub _rnfr {
   my $self = shift;
-  $self->command( "RNFR", @_ );
-  return ( $self->response == CMD_MORE );
+  return ( $self->command ( "RNFR", @_ )->response () == CMD_MORE );
 }
 
 sub _rnto {
   my $self = shift;
-  $self->command( "RNTO", @_ );
-  return ( $self->response == CMD_OK );
+  return ( $self->command ( "RNTO", @_ )->response () == CMD_OK );
 }
 
 sub mfmt {
@@ -1415,8 +1728,7 @@ sub _mfmt {
   my $time = sprintf ("%04d%02d%02d%02d%02d%02d",
                       $yr + 1900, $mon + 1, $day, $hr, $min, $sec);
 
-  $self->command( "MFMT", $time, @_ );
-  return ( $self->response () == CMD_OK );
+  return ( $self->command ( "MFMT", $time, @_ )->response () == CMD_OK );
 }
 
 sub mdtm {
@@ -1439,9 +1751,7 @@ sub _mdtm {
 
   my $timestamp;
 
-  $self->command( "MDTM", @_ );
-
-  if ( $self->response () == CMD_OK &&
+  if ( $self->command ("MDTM", @_)->response () == CMD_OK &&
        ${*$self}{last_ftp_msg} =~ m/(^|\D)(\d{14})($|\D)/ ) {
     my $time_str = $2;    # The timestamp on the remote server: YYYYMMDDHHMMSS.
 
@@ -1459,9 +1769,7 @@ sub _mdtm {
 sub size {
   my $self = shift;
 
-  $self->command( "SIZE", @_ );
-
-  if ( $self->response () == CMD_OK &&
+  if ( $self->command ("SIZE", @_)->response () == CMD_OK &&
        ${*$self}{last_ftp_msg} =~ m/\d+\s+(\d+)($|\D)/ ) {
         return ( $1 );   # The size in bytes!  May be zero!
   }
@@ -1631,11 +1939,11 @@ sub _croak_or_return {
       }
 
       if ( ${*$self}{Croak} ) {
-         my $c = (caller(1))[3];
-         $c = ""  unless (defined $c);
+         my $c = (caller(1))[3] || "";
 
          # Trying to prevent infinite recursion ...
          if ( ref($self) eq "Net::FTPSSL" &&
+                    (! exists ${*$self}{_command_failed_}) &&
                     (! exists ${*$self}{recursion}) &&
                     $c ne "Net::FTPSSL::command" &&
                     $c ne "Net::FTPSSL::response" ) {
@@ -1665,7 +1973,7 @@ sub _croak_or_return {
 }
 
 #-----------------------------------------------------------------------
-#  Messages handler
+# Messages handler
 # -----------------------------------------------------------------------------
 # Called by both Net::FTPSSL and IO::Socket::INET classes.
 #-----------------------------------------------------------------------
@@ -1674,6 +1982,9 @@ sub command {
   my $self = shift;
   my @args;
   my $data;
+
+  # Remove any previous failure ...
+  delete ( ${*$self}{_command_failed_} );
 
   # remove undef values from the list.
   # Maybe I have to find out why those undef were passed.
@@ -1686,29 +1997,33 @@ sub command {
                     } @args
               );
 
+  # Log the command being executed ...
   if ( ${*$self}{debug} ) {
      my $prefix = ( ref($self) eq "Net::FTPSSL" ) ? ">>> " : "SKT >>> ";
      if ( $data =~ m/^PASS\s/ ) {
-        _print_LOG ( $self, $prefix . "PASS *******\n" );   # Don't echo passwords
+        _print_LOG ( $self, $prefix . "PASS *******\n" ); # Don't echo passwords
+     } elsif ( $data =~ m/^USER\s/ ) {
+        _print_LOG ( $self, $prefix . "USER +++++++\n" ); # Don't echo user names
      } else {
-        _print_LOG ( $self, $prefix . $data . "\n" );       # Echo everything else
+        _print_LOG ( $self, $prefix . $data . "\n" );     # Echo everything else
      }
   }
 
   $data .= "\015\012";
 
-  my $written;
   my $len = length $data;
-  $written = syswrite( $self, $data, $len );
+  my $written = syswrite( $self, $data, $len );
   unless ( defined $written ) {
+    ${*$self}{_command_failed_} = "ERROR";
     my $err_msg = "Can't write command on socket: $!";
     carp "$err_msg";                    # This prints a warning.
     $self->close;
     # Not called as an object member in case $self not a FTPSSL obj.
-    return _croak_or_return ($self, 0, $err_msg);
+    _croak_or_return ($self, 0, $err_msg);
+    return $self;  # Included here due to non-standard _croak_or_return() usage.
   }
 
-  return 1;
+  return $self;    # So can directly call response()!
 }
 
 # -----------------------------------------------------------------------------
@@ -1720,7 +2035,7 @@ sub command {
 # current response or return the wrong code if you get into the next response!
 #     (And will probably hang the next time response() is called.)
 # So far the only thing I haven't seen is a call to sysread() returning a
-# partial response!
+# partial line response!
 # -----------------------------------------------------------------------------
 # Called by both Net::FTPSSL and IO::Socket::INET classes.
 # -----------------------------------------------------------------------------
@@ -1729,7 +2044,12 @@ sub command {
 sub response {
   my $self = shift;
 
-  ${*$self}{last_ftp_msg} = "";   # Clear out the old message
+  # Only continue if the command() call worked!
+  # Otherwise on failure this method will hang!
+  # We already printed out the failure message in command() if not croaking!
+  return (CMD_ERROR)  if ( exists ${*$self}{_command_failed_} );
+
+  ${*$self}{last_ftp_msg} = "";   # Clear out the message
   my $prefix = ( ref($self) eq "Net::FTPSSL" ) ? "<<< " : "SKT <<< ";
 
   my ( $data, $code, $sep, $desc ) = ( "", CMD_ERROR, "-", "" );
@@ -1747,7 +2067,7 @@ sub response {
           # Not called as an object member in case $self not a FTPSSL obj.
           _croak_or_return ($self, 0, (defined $read)
                                 ? "Can't read command channel socket: $!"
-                                : "Unexpected EOF on command channel socket!");
+                                : "Unexpected EOF on command channel socket: $!");
           return (CMD_ERROR);
         }
      }
@@ -1779,7 +2099,16 @@ sub response {
           $sep = ""  unless (defined $sep);
        }
 
+       # Save the unedited message ...
        ${*$self}{last_ftp_msg} .= $line;
+
+       # Do we need to hide a value in the logged response ???
+       if ( exists ( ${*$self}{_hide_value_in_response_} ) ) {
+         my $val = ${*$self}{_hide_value_in_response_};
+         my $mask = ${*$self}{_mask_value_in_response_} || "????";
+         $line =~ s/$val/<$mask>/g;
+       }
+
        _print_LOG ( $self, $prefix . $line . "\n" ) if ${*$self}{debug};
 
        if ( $sep eq '-' ) {
@@ -1790,7 +2119,7 @@ sub response {
      }    # End for $line loop
   }       # End while $sep loop
 
-  return substr( $code, 0, 1 );     # The 1st digit of the code!
+  return substr( $code, 0, 1 );     # The 1st digit of the 3 digit code!
 }
 
 sub last_message {
@@ -1799,7 +2128,7 @@ sub last_message {
 }
 
 #-----------------------------------------------------------------------
-#  Added to make backwards compatable with Net::FTP
+#  Added to make backwards compatible with Net::FTP
 #-----------------------------------------------------------------------
 sub message {
    my $self = shift;
@@ -1817,6 +2146,12 @@ sub last_status_code {
    return ($code);
 }
 
+sub restart {
+   my $self = shift;
+   my $offset = shift;
+   ${*$self}{net_ftpssl_rest_offset} = $offset;
+   return (undef);
+}
 
 #-----------------------------------------------------------------------
 # Implements data channel call back functionality ...
@@ -1910,25 +2245,34 @@ sub _debug_print_hash
    my $host = shift;
    my $port = shift;
    my $mode = shift;
+   my $obj  = shift || $self;   # So can log any object type ...
 
-   $self->_print_LOG ( "\nObject SSL Details ..." );
+   $self->_print_LOG ( "\nObject " . ref($obj) . " Details ..." );
    $self->_print_LOG ( " ($host:$port - $mode)" )  if (defined $host);
    $self->_print_LOG ( "\n" );
 
-   foreach (keys %{*$self}) {
-      if ( ! defined $host ) {
+   foreach (sort keys %{*$obj}) {
+      unless ( defined $host ) {
          next   unless ( m/^(io_|_SSL|SSL)/ );
       }
-      my $x = ${*$self}{$_};
-      $x="(undef)" unless (defined $x);
-      $x = join ("\n         ", split (/\n/, $x))  if (! ref($x));
-      $self->_print_LOG ( "  $_ ==> $x\n" );
-      if ($x =~ m/HASH\(0/) {
-         foreach (keys %{$x}) {
-           my $y = $x->{$_};
-           $y="(undef)" unless (defined $y);
-           $y = join ("\n                   ", split (/\n/, $y)) if (! ref($y));
+      my $val = ${*$obj}{$_};
+      $val = "(undef)"  unless (defined $val);
+      $val = join ("\n         ", split (/\n/, $val))  unless (ref($val));
+      $self->_print_LOG ( "  $_ ==> $val\n" );
+      if ($val =~ m/HASH\(0/) {
+         foreach (sort keys %{$val}) {
+           my $y = $val->{$_};
+           $y = "(undef)"  unless (defined $y);
+           $y = join ("\n                   ", split (/\n/, $y)) unless (ref($y));
            $self->_print_LOG ( "        -- $_ ===> $y\n" );
+           if ($y =~ m/HASH\(0/) {
+              foreach (sort keys %{$y}) {
+                 my $z = $y->{$_};
+                 $z = "(undef)"  unless (defined $z);
+                 $z = join ("\n                       ", split (/\n/, $z)) unless (ref($z));
+                 $self->_print_LOG ( "            -- $_ ----> $z\n" );
+              }
+           }
          }
       }
    }
@@ -1988,7 +2332,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.17
+=head1 VERSION 0.18
 
 =head1 SYNOPSIS
 
@@ -1998,7 +2342,7 @@ Net::FTPSSL - A FTP over SSL/TLS class
                               Port => 21,
                               Encryption => EXP_CRYPT,
                               Debug => 1) 
-    or die "Can't open ftp.yoursecureserver.com";
+    or die "Can't open ftp.yoursecureserver.com\n$Net::FTPSSL::ERRSTR";
 
   $ftps->login('anonymous', 'user@localhost') 
     or die "Can't login: ", $ftps->last_message();
@@ -2028,7 +2372,7 @@ Perl as described in RFC959 and RFC2228.  It will use TLS by default.
 Creates a new B<Net::FTPSSL> object and opens a connection with the
 C<HOST>. C<HOST> is the address of the FTPS server and it's a required
 argument. OPTIONS are passed in a hash like fashion, using key and value
-pairs.
+pairs.  If you wish you can also pass I<OPTIONS> as a hash reference.
 
 If it can't create a new B<Net::FTPSSL> object, it will return I<undef> unless
 you set the I<Croak> option.  In either case you will find the cause of the
@@ -2059,11 +2403,14 @@ Set B<useSSL =E<gt> 1> to use SSL.
 
 B<Timeout> - Set a connection timeout value. Default value is 120.
 
+B<LocalAddr> - Local address to use for all socket connections, this argument
+will be passed to all L<IO::Socket::INET> calls.
+
 B<PreserveTimestamp> - During all I<puts> and I<gets>, attempt to preserve the
 file's timestamp.  By default it will not preserve the timestamps.
 
-B<Buffer> - This is the block size that Net::FTPSSL will use when a transfer is
-made. Default value is 10240.
+B<Buffer> - This is the block size that I<Net::FTPSSL> will use when a transfer
+is made. Default value is 10240.
 
 B<Trace> - Turns on/off put/get download tracing to STDERR.  Default is off.
 
@@ -2071,7 +2418,7 @@ B<Debug> - This turns the debug tracing option on/off. Default is off. (0,1,2)
 
 B<DebugLogFile> - Redirects the output of B<Debug> from F<STDERR> to the
 requested error log file name.  This option is ignored unless B<Debug> is also
-turned on.  Enforced this way for backwards compatability.  If B<Debug> is set
+turned on.  Enforced this way for backwards compatibility.  If B<Debug> is set
 to B<2>, the log file will be opened in I<append> mode instead of creating a
 new log file.  This file is closed when I<quit> is called and B<Debug> messages
 go back to F<STDERR> again afterwards.
@@ -2082,6 +2429,18 @@ croaks, it will attempt to close the FTPS connection as well, preserving the
 last message before it attempts to close the connection.  Allowing the server
 to know the client is going away.  This will cause I<$Net::FTPSSL::ERRSTR> to
 be set as well.
+
+B<SSL_Client_Certificate> - Expects a reference to a hash.  It's main purpose
+is to allow you to use client certificates when talking to your I<FTPS> server.
+Options here apply to the creation of the command channel.  And when a data
+channel is needed later, it uses the B<SSL_reuse_ctx> option to reuse the
+command channel's context.  See I<start_SSL()> in I<IO::Socket::SSL> for more
+details on this and other options available.  If an option provided here
+conflicts with other options we would normally use, the entries in this hash
+take precedence.
+
+B<SSL_Advanced> - Depreciated, use I<SSL_Client_Certificate> instead.  It's now
+just an alias for I<SSL_Client_Certificate>
 
 B<OverridePASV> - Some I<FTPS> servers sitting behind a firewall incorrectly
 return their local IP Address instead of their external IP Address used
@@ -2099,12 +2458,6 @@ This option supports three distinct modes to support your needs.  You can pass
 a reference to an array that lists all the B<FTP> commands your sever supports,
 you can set it to B<1> to say all commands are supported, or set it to B<0> to
 say none of the commands are supported.  See I<supported()> for more details.
-
-B<SSL_Advanced> - Expects a reference to a hash.  This feature is totally
-unsupported.  It is only provided so you can attempt to use the more obscure
-options when start_SSL() is called.  If an option here conflicts with other
-options we would normally use, entries in this hash take precedence.  See
-I<IO::Socket::SSL> for these options.
 
 =back
 
@@ -2177,16 +2530,53 @@ Personally, I suggest using nlst instead of list.
 =item ascii()
 
 Sets the file transfer mode to ASCII.  I<CR LF> transformations will be done.
+ASCII is the default transfer mode.
 
 =item binary()
 
-Sets the file transfer mode to binary. No transformation will be done.
+Sets the file transfer mode to binary. No I<CR LF> transformation will be done.
 
-=item put( LOCAL_FILE, [REMOTE_FILE] )
+=item put( LOCAL_FILE [, REMOTE_FILE [, OFFSET]] )
 
 Stores the I<LOCAL_FILE> onto the remote ftps server. I<LOCAL_FILE> may be a
-filehandle, but in this case I<REMOTE_FILE> is required.
-Return B<undef> if it fails.
+file handle, but in this case I<REMOTE_FILE> is required.
+It returns B<undef> if I<put()> fails.
+
+If you provide an I<OFFSET>, this method assumes you are attempting to
+continue with an upload that was aborted earlier.  And it's your responsibility
+to verify that it's the same file on the server you tried to upload earlier.  By
+providing the I<OFFSET>, this function will send a B<REST> command to the FTPS
+Server to skip over that many bytes before it starts writing to the file.  This
+method will also skip over the requested I<OFFSET> after opening the
+I<LOCAL_FILE> for reading, but if passed a file handle it will assume you've
+already positioned it correctly.  If you provide an I<OFFSET> of B<-1>, this
+method will calculate the offset for you by issuing a I<SIZE> command against
+the file on the FTPS server.  So I<REMOTE_FILE> must already exist to use
+B<-1>, or it's an error. It is also an error to make I<OFFSET> larger than the
+I<REMOTE_FILE>.
+
+If the I<OFFSET> you provide turns out to be smaller than the current size of
+I<REMOVE_FILE>, the server will truncate the I<REMOTE_FILE> to that size before
+appending to the end of I<REMOTE_FILE>.  (This may not be consistent across
+all FTPS Servers, so don't depend on this feature without testing it first.)
+
+If the option I<PreserveTimestamp> was used, and the FTPS server supports it,
+it will attempt to reset the timestamp on I<REMOTE_FILE> to the timestamp on
+I<LOCAL_FILE>.
+
+=item append( LOCAL_FILE [, REMOTE_FILE [, OFFSET]] )
+
+Appends the I<LOCAL_FILE> onto the I<REMOTE_FILE> on the ftps server.  If
+I<REMOTE_FILE> doesn't exist, the file will be created.  I<LOCAL_FILE> may be
+a file handle, but in this case I<REMOTE_FILE> is required and I<OFFSET> is
+ignored.  It returns B<undef> if I<append()> fails.
+
+If you provide an I<OFFSET>, it will skip over that number of bytes in the
+I<LOCAL_FILE> except when it was a file handle, but B<will not> send a B<REST>
+command to the server.  It will just append to the end of I<REMOTE_FILE>
+on the server.  You can also provide an I<OFFSET> of B<-1> with the same
+limitations as with I<put()>.  If you need the B<REST> command sent to the
+FTPS server, use I<put()> instead.
 
 If the option I<PreserveTimestamp> was used, and the FTPS server supports it,
 it will attempt to reset the timestamp on I<REMOTE_FILE> to the timestamp on
@@ -2195,8 +2585,9 @@ I<LOCAL_FILE>.
 =item uput( LOCAL_FILE, [REMOTE_FILE] )
 
 Stores the I<LOCAL_FILE> onto the remote ftps server. I<LOCAL_FILE> may be a
-filehandle, but in this case I<REMOTE_FILE> is required.  If I<REMOTE_FILE>
-already exists on the ftps server, a unique name is calculated for use instead.
+file handle, but in this case I<REMOTE_FILE> is required.  If I<REMOTE_FILE>
+already exists on the ftps server, a unique name is calculated by the server
+for use instead.
 
 If the file transfer succeeds, this function will return the actual name used
 on the remote ftps server.  If it can't figure that out, it will return what
@@ -2246,14 +2637,34 @@ I<PREFIX> with a different directory to drop the scratch file into.  This avoids
 forcing you to change into the requested directory first when you have multiple
 files to send out into multiple directories.
 
-=item get( REMOTE_FILE, [LOCAL_FILE] )
+=item get( REMOTE_FILE [, LOCAL_FILE [, OFFSET]] )
 
 Retrieves the I<REMOTE_FILE> from the ftps server. I<LOCAL_FILE> may be a
-filename or a filehandle.  Return B<undef> if it fails.
+filename or a file handle.  It returns B<undef> if I<get()> fails.  You don't
+usually need to use I<OFFSET>.
 
-If the option I<PreserveTimestamp> was used, and the FTPS server supports it,
+If you provide an I<OFFSET>, this method assumes your are attempting to
+continue with a download that was aborted earlier.  And it's your responsibility
+to verify that it's the same file you tried to download earlier.  By providing
+the I<OFFSET>, it will send a B<REST> command to the FTPS Server to skip over
+that many bytes before it starts downloading the file again.  If you provide an
+I<OFFSET> of B<-1>, this method will calculate the offset for you based on the
+size of I<LOCAL_FILE> using the current transfer mode.  (I<ASCII> or I<BINARY>).
+It is an error to set it to B<-1> if the I<LOCAL_FILE> is a file handle.
+
+On the client side of the download, the I<OFFSET> will do the following:
+Open the file and truncate everything after the given I<OFFSET>.  So if you
+give an I<OFFSET> that is too big, it's an error.  If it's too small, the
+file will be truncated to that I<OFFSET> before appending what's being
+downloaded.  If the I<LOCAL_FILE> is a file handle, it will assume the file
+handle has already been positioned to the proper I<OFFEST> and it will not
+perform a truncate.  Instead it will just append to that file handle's
+current location.  Just beware that using huge I<OFFSET>s in B<ASCII> mode
+can be a bit slow if the I<LOCAL_FILE> needs to be truncated.
+
+If the option I<PreserveTimestamp> was used, and the FTPS Server supports it,
 it will attempt to reset the timestamp on I<LOCAL_FILE> to the timestamp on
-I<REMOTE_FILE>.
+I<REMOTE_FILE> after the download completes.
 
 =item xget( REMOTE_FILE, [LOCAL_FILE, [PREFIX, [POSTFIX, [BODY]]]] )
 
@@ -2273,11 +2684,11 @@ Deletes the indicated I<REMOTE_FILE>.
 Attempts to change directory to the directory given in I<DIR> on the remote
 server.
 
-=item pwd()
+=item pwd( )
 
 Returns the full pathname of the current directory on the remote server.
 
-=item cdup()
+=item cdup( )
 
 Changes directory to the parent of the current directory on the remote server.
 
@@ -2291,7 +2702,7 @@ the moment.
 Removes the empty indicated directory I<DIR> on the remote server. No recursion
 at the moment.
 
-=item noop()
+=item noop( )
 
 It requires no action other than the server send an OK reply.
 
@@ -2326,14 +2737,38 @@ I<localtime()> and will never call croak.
 =item size( remote_file )
 
 This function will return I<undef> or croak on failure.  Otherwise it will
-return the file's size in bytes, which may also be zero bytes!  Just be aware
-for text files that the size returned may not match the file's actual size when
-the file is downloaded to your system in I<ASCII> mode.  This is an OS specific
-issue.  It will always match if you are using I<BINARY> mode.
+return the file's size in bytes, which may also be zero bytes! Just be aware
+for text files that the size returned may not match the file's actual size after
+the file has been downloaded to your system in I<ASCII> mode.  This is an OS
+specific issue.  It will always match if you are using I<BINARY> mode.
+
+Also I<SIZE> may return a different size for I<ASCII> & I<BINARY> modes.
+This issue depends on what OS the FTPS server is running under.  Should they
+be different, the I<ASCII> size will be the I<BINARY> size plus the number of
+lines in the file.
+
+=item restart( OFFSET )
+
+Set the byte offset at which to begin the next data transfer.  I<Net::FTPSSL>
+simply records this value and uses it during the next data transfer.  For
+this reason this method will not return an error, but setting it may cause
+subsequent data transfers to fail.
+
+I recommend using the OFFSET directly in I<get()>, I<put()>, and I<append()>
+instead of using this method.  It was only added to make I<Net::FTPSSL>
+compatible with I<Net::FTP>.  A non-zero offset in those methods will override
+what you provide here.  If you call any of the other I<get()>/I<put()> variants
+after calling this function, you will get an error.
+
+It is OK to use an I<OFFSET> of B<-1> here to have I<Net::FTPSSL> calculate
+the correct I<OFFSET> for you before it get's used.  Just like if you had
+provided it directly to the I<get()>, I<put()>, and I<append()> calls.
+
+This I<OFFSET> will be automatically zeroed out the 1st time it is used.
 
 =item quot( CMD [,ARGS] )
 
-Send a command, that Net::FTPSSL does not directly support, to the remote
+Send a command, that I<Net::FTPSSL> does not directly support, to the remote
 server and wait for a response.  You are responsible for parsing anything
 you need from I<message()> yourself.
 
@@ -2388,14 +2823,17 @@ message from I<$Net::FTPSSL::ERRSTR> instead.  Be careful since
 I<$Net::FTPSSL::ERRSTR> is shared between instances of I<Net::FTPSSL>, while
 I<message> & I<last_message> B<are not> shared between instances!
 
-=item last_status_code()
+=item last_status_code( )
 
 Returns the one digit status code associated with the last response from the
-FTPS server.
+FTPS server.  The status is the first digit from the full 3 digit response code.
+
+The possible values are exposed via the following B<7> constants:
+CMD_INFO, CMD_OK, CMD_MORE, CMD_REJECT, CMD_ERROR, CMD_PROTECT and CMD_PENDING.
 
 =item set_croak( [1/0] )
 
-Used to turn the I<Croak> option on/off after the Net::FTPSSL object has been
+Used to turn the I<Croak> option on/off after the I<Net::FTPSSL> object has been
 created.  It returns the previous I<Croak> settings before the change is made.
 If you don't provide an argument, all it does is return the current setting.
 Provided in case the I<Croak> option proves to be too restrictive in some cases.
@@ -2420,30 +2858,33 @@ is called only once per command after processing all the data channel data.
 The B<cb_data_ref> is an optional reference to an I<array> or I<hash> that the
 caller can use to store values between calls to the callback function and the
 end callback function.  If you don't need such a work area, it's safe to not
-provide one.  The Net::FTPSSL class doesn't look at this reference.
+provide one.  The I<Net::FTPSSL> class doesn't look at this reference.
 
 The callback function must take the following B<5> arguments:
 
    B<callback> (ftps_func_name, data_ref, data_len_ref, total_len, cb_data_ref);
 
-The I<ftps_func_name> will tell what Net::FTPSSL function requested the callback
-so that your I<callback> function can determine what the data is for and do
-conditional logic accordingly.  We don't provide a reference to the Net::FTPSSL
-object itself since the class is not recursive.  Each Net::FTPSSL object should
-have it's own I<cb_dat_ref> to work with.  But methods within the class can
-share one.
+The I<ftps_func_name> will tell what I<Net::FTPSSL> function requested the
+callback so that your I<callback> function can determine what the data is for
+and do conditional logic accordingly.  We don't provide a reference to the
+I<Net::FTPSSL> object itself since the class is not recursive.  Each
+I<Net::FTPSSL> object should have it's own I<cb_dat_ref> to work with.  But
+methods within the class can share one.
 
 Since we pass the data going through the data channel as a reference, you are
 allowed to modify the data.  But if you do, be sure to update I<data_len_ref>
-to the new data length as well.  Otherwise you will get buggy responses.
+to the new data length as well if it changes.  Otherwise you will get buggy
+responses.  Just be aware that if you change the length, more than likely you'll
+be unable to reliably restart an upload or download via I<restart()> or using
+I<OFFSET> in the I<put> & I<get> commands.
 
 Finally, the I<total_len> is how many bytes have already been processed.  It
 does not include the data passed for the current I<callback> call.  So it will
 always be zero the first time it's called.
 
 Once we finish processing data for the data channel, a different callback
-function will be called to tell you that the data channel is closing.  This is
-your last chance to affect what is going over the data channel and to do any
+function will be called to tell you that the data channel is closing.  That will
+be your last chance to affect what is going over the data channel and to do any
 needed post processing.  The end callback function must take the following
 arguments:
 
@@ -2454,14 +2895,14 @@ this function allows you to optionally provide additional data to/from the data
 channel.  If reading from the data channel, it will treat the return value as
 the last data returned before it was closed.  Otherwise it will be written to
 the data channel before it is closed.  Please return I<undef> if there is
-nothing extra for the Net::FTPSSL command to process.
+nothing extra for the I<Net::FTPSSL> command to process.
 
 You should also take care to clean up the contents of I<cb_data_ref> in the
 I<end_callback> function.  Otherwise the next callback sequence that uses this
 work area may behave strangely.
 
-As a final note, should the data channel be empty, it is likely that just the
-I<end_callback> function is called without any calls to the I<callback>
+As a final note, should the data channel be empty, it is very likely that just
+the I<end_callback> function will be called without any calls to the I<callback>
 function.
 
 =back
@@ -2486,6 +2927,8 @@ RFC 959 - L<ftp://ftp.rfc-editor.org/in-notes/rfc959.txt>
 
 RFC 2228 - L<ftp://ftp.rfc-editor.org/in-notes/rfc2228.txt>
 
+RFC 2246 - L<ftp://ftp.rfc-editor.org/in-notes/rfc2246.txt>
+
 RFC 4217 - L<ftp://ftp.rfc-editor.org/in-notes/rfc4217.txt>
 
 =head1 CREDITS
@@ -2497,15 +2940,15 @@ collection of modules (libnet).
 
 Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
 and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
-L<http://search.cpan.org/~cleach/Net-FTPSSL-0.17/FTPSSL.pm>.
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.18/FTPSSL.pm>.
 
 Patches are appreciated when a log file and sample code are also provided.
 
 =head1 COPYRIGHT
 
-Copyright (c) 2005 Marco Dalla Stella. All rights reserved.
-
 Copyright (c) 2009 to 2011 Curtis Leach. All rights reserved.
+
+Copyright (c) 2005 Marco Dalla Stella. All rights reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the same terms as Perl itself.
