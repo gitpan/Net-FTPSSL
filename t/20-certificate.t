@@ -26,30 +26,42 @@ BEGIN { use_ok('Net::FTPSSL') }    # Test # 1
 sleep (1);  # So test 1 completes before the message prints!
 
 # -----------------------------------------------------------
-# This section initializes an unsupported feature to Net::FTPSSL.
-# But it's required in order to implement Client Certificates.
+# This section initializes a new feature to Net::FTPSSL.
+# It's required in order to implement Client Certificates
+# so that you can talk to FTPS servers that require them.
 # -----------------------------------------------------------
-my %advanced_hash = ( SSL_version   => "SSLv23",
-                      SSL_use_cert  => 1,
-                      SSL_server    => 0,
-                      SSL_key_file  => "$ENV{HOME}/Certificate/private.pem",
-                      SSL_cert_file => "$ENV{HOME}/Certificate/pubkey.pem",
-                      SSL_passwd_cb => sub { return ("my_password") },
-                      Timeout       => 60 );
+# **** THIS IS THE CODE SECTION TO MODIFY. ****
+# **** SEE THE README FILE FOR INSTRUCTIONS ON THE 3 LINES ****
+# **** OF CODE YOU NEED TO CHANGE BELOW TO BE ABLE TO TALK ****
+# **** TO YOUR FTPS SERVER USING CLIENT CERTIFICATES! ****
+# -----------------------------------------------------------
+my %certificate_hash = ( SSL_version   => "SSLv23",
+                         SSL_use_cert  => 1,
+                         SSL_server    => 0,
+                         SSL_key_file  => "$ENV{HOME}/Certificate/private.pem",
+                         SSL_cert_file => "$ENV{HOME}/Certificate/pubkey.pem",
+                         SSL_passwd_cb => sub { return ("my_password") },
+                         Timeout       => 60 );
+# -----------------------------------------------------------
+# **** END OF SECTION TO CUSTOMIZE! ****
 # -----------------------------------------------------------
 
 
+diag( "" );
 diag( "\nYou can also perform a certificate test." );
 diag( "Some information will be required for this test:" );
 diag( "A secure ftp server expecting a client certificate,");
 diag( "a user, a password and a directory where the user");
 diag( "has permissions to read and write." );
+diag ( "See the README file for instructions on how to fully" );
+diag ( "enable this test!" );
+
 my $more_test = ask_yesno("Do you want to do a certificate test");
 
 SKIP: {
     skip ( "Certificate tests skipped for some reason ...", $skipper ) unless $more_test;
 
-    unless (-f $advanced_hash{SSL_key_file} && -f $advanced_hash{SSL_cert_file} ) {
+    unless (-f $certificate_hash{SSL_key_file} && -f $certificate_hash{SSL_cert_file} ) {
        skip ( "Deeper test skipped due to no client certificate defined ...", $skipper );
     }
 
@@ -98,12 +110,12 @@ SKIP: {
     open (OLDERR, ">&STDERR");
     open (STDERR, "> $log_file");
 
-    $advanced_hash{SSL_version} = ($encrypt_mode ? "SSLv23" : "TLSv1");
+    $certificate_hash{SSL_version} = ($encrypt_mode ? "SSLv23" : "TLSv1");
 
     # My Net::FTPSSL connection options ...
     my %ftps_opts = ( Port => $port, Encryption => $mode,
                       DataProtLevel => $data, useSSL => $encrypt_mode,
-                      SSL_Client_Certificate => \%advanced_hash,
+                      SSL_Client_Certificate => \%certificate_hash,
                       Croak => 1,
                       Timeout => 121, Debug => 1, Trace => 1 );
 
@@ -188,18 +200,9 @@ sub ask {
   my $default  = uc (shift);
   my $values   = uc (shift);
 
-  if ( $default ) {
-     diag ("\n$question (Default '$default') ? ");
-  } else {
-     diag("\n$question ? ");
-  }
+  my $answer = uc (prompt ($question, $default, $values));
 
-  my $answer = uc (<STDIN>);
-  chomp $answer;
-
-  if ( ! $answer ) {
-     $answer = $default;
-  } elsif ( $values && $answer !~ m/^$values$/ ) {
+  if ( $values && $answer !~ m/^$values$/ ) {
      $answer = $default;   # Change invalid value to default answer!
   }
 
@@ -217,35 +220,26 @@ sub ask2 {
   my $values   = shift || "";
   my $altdef   = shift || $default;
 
-  if ( $altdef ) {
-     diag ("\n$question (Default '$altdef') ? ");
-  } else {
-     diag("\n$question ? ");
-  }
-
-  my $answer = <STDIN>;
-  chomp $answer;
+  my $answer = prompt ($question, $altdef, $values);
 
   if ( $answer =~ m/^\s+$/ ) {
-     $answer = "";    # Overriding any defaults ...
-  } elsif ( ! $answer ) {
-     $answer = $altdef;
+     $answer = "";         # Overriding any defaults ...
   } elsif ( $values && $answer !~ m/^$values$/ ) {
      $answer = $altdef;    # Change invalid value to default answer!
   }
 
-  # diag ("ANS: [$answer]");
+  # diag ("ANS2: [$answer]");
 
   return $answer;
 }
 
 sub ask_yesno {
-
   my $question = shift;
-  diag("\n$question ? [y/N]");
 
-  my $answer = <STDIN>;
-  chomp $answer;
+  my $answer = prompt ($question, "N", "(Y|N)");
+
+  # diag ("ANS-YN: [$answer]");
+
   return $answer =~ /^y(es)*$/i ? 1 : 0;
 }
 
@@ -271,6 +265,41 @@ sub print_result {
    }
    print STDERR "-----------------------------------------------\n";
 }
+
+
+# Based on ExtUtils::MakeMaker::prompt
+# (can't use since "make test" doesn't display questions!)
+
+sub prompt {
+   my ($question, $def, $opts) = (shift, shift, shift);
+
+   my $isa_tty = -t STDIN && (-t STDOUT || !(-f STDOUT || -c STDOUT));
+
+   my $dispdef = defined $def ? "[$def] " : " ";
+   $def = defined $def ? $def : "";
+
+   if (defined $opts && $opts !~ m/^\s*$/) {
+      diag ("\n$question ? $opts $dispdef");
+   } else {
+      diag ("\n$question ? $dispdef");
+   }
+
+   my $ans;
+   if ( $ENV{PERL_MM_USE_DEFAULT} || (!$isa_tty && eof STDIN)) {
+      diag ("$def\n");
+   } else {
+      $ans = <STDIN>;
+      chomp ($ans);
+      unless (defined $ans) {
+         diag ("\n");
+      }
+   }
+
+   $ans = $def  unless ($ans);
+
+   return ( $ans );
+}
+
 
 # vim:ft=perl:
 

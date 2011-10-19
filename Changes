@@ -2,6 +2,24 @@ Revision history for Perl extension Net::FTPSSL.
 
 Version - YYYY/MM/DD
 --------------------
+0.19 2011/09/26 08:30:00
+  - If you use SSL_Advanced, it now writes to STDERR that you are using a
+    depreciated feature.
+  - Modified 10-complex.t & 20-certificate.t to honor the PERL_MM_USE_DEFAULT
+    envionment variable for the smoke testers to always use defaults, which
+    skips executing these 2 scripts.  BUG # 69982.
+    (Same thing now happens for "make test < /dev/null" as well.)
+    Couldn't use ExtUtils::MakeMaker::prompt() per request since "make test"
+    wouldn't display the questions it was asking & it looked like it hung in
+    interactive mode for normal users!  So based my solution on that function
+    using diag() instead of print.
+  - Fixed Typos in POD text Bug # 70438 & some misleading comments.
+  - Updated the README file to include comments on t/20-certificate.t and what
+    changes are required before you can use it.
+  - Updated t/20-certificate.t to highlight the section of code that the README
+    file is talking about and the initial prompt to remind the user to see the
+    the README file for the needed modifications before running the test!
+
 0.18 2011/07/29 08:30:00
   - More fixes/clarifications to the POD text.
   - Fixed minor wild card issue with LIST & NLST if "+" was in the file name.

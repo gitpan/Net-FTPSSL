@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
-# Author  : kral <kral at paranici dot org>
+# Author  : cleach <cleach at cpan dot org>
 # Created : 01 March 2005
-# Version : 0.18
+# Version : 0.19
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -24,7 +24,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.18";
+$VERSION = "0.19";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -79,17 +79,18 @@ sub new {
   my $host         = shift;
   my $arg          = (ref ($_[0]) eq "HASH") ? $_[0] : {@_};
 
-  # Using this feature is unsupported.  Use at own risk!
-  # This feature will overide normal options if tags conflict and
-  # applies to both the command and data channels!
   # The main purpose of this option is to allow users to specify
   # client certificates when their FTPS server requires them.
-  # From IO::Socket::SSL.
+  # This hash applies to both the command & data channels.
+  # Tags specified here overrided normal options if any tags
+  # conflict.  Any other use of this option is unsupported.
+  # See IO::Socket::SSL for supported options.
   my %ssl_args;
   if (ref ($arg->{SSL_Client_Certificate}) eq "HASH") {
      %ssl_args = %{$arg->{SSL_Client_Certificate}}
   } elsif (ref ($arg->{SSL_Advanced}) eq "HASH") {
-     %ssl_args = %{$arg->{SSL_Advanced}}    # Depreciated in v0.18
+     %ssl_args = %{$arg->{SSL_Advanced}};       # Depreciated in v0.18
+     print STDERR "SSL_Advanced has been depreciated, use SSL_Client_Certificate instead!\n";
   }
 
   # Now onto processing the regular hash of arguments provided ...
@@ -2332,7 +2333,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.18
+=head1 VERSION 0.19
 
 =head1 SYNOPSIS
 
@@ -2439,8 +2440,9 @@ details on this and other options available.  If an option provided here
 conflicts with other options we would normally use, the entries in this hash
 take precedence.
 
-B<SSL_Advanced> - Depreciated, use I<SSL_Client_Certificate> instead.  It's now
-just an alias for I<SSL_Client_Certificate>
+B<SSL_Advanced> - Depreciated, use I<SSL_Client_Certificate> instead.  This is
+now just an alias for I<SSL_Client_Certificate>.  If both are used, this
+option is ignored.
 
 B<OverridePASV> - Some I<FTPS> servers sitting behind a firewall incorrectly
 return their local IP Address instead of their external IP Address used
@@ -2448,9 +2450,9 @@ outside the firewall where the client is.  To use this option to correct this
 problem, you must specify the correct host to use for the I<data channel>
 connection.  This should usually match what you provided as the host!
 
-B<OverrideHELP> - Some I<FTPS> servers on encrypted connections incorrctly send
+B<OverrideHELP> - Some I<FTPS> servers on encrypted connections incorrectly send
 back part of the response to the B<HELP> command in clear text instead of it all
-being encryped, breaking the command channel connection.  This class calls
+being encrypted, breaking the command channel connection.  This class calls
 B<HELP> internally via I<supported()> for some conditional logic, making a work
 around necessary to be able to talk to such servers.
 
@@ -2499,7 +2501,7 @@ This method returns true if it succeeds, or false if it fails.
 
 =item list( [DIRECTORY [, PATTERN]] )
 
-This method returns a list of files in a format simalar to this: (Server Specific)
+This method returns a list of files in a format similar to this: (Server Specific)
 
  drwxrwx--- 1 owner group          512 May 31 11:16 .
  drwxrwx--- 1 owner group          512 May 31 11:16 ..
@@ -2940,7 +2942,7 @@ collection of modules (libnet).
 
 Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
 and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
-L<http://search.cpan.org/~cleach/Net-FTPSSL-0.18/FTPSSL.pm>.
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.19/FTPSSL.pm>.
 
 Patches are appreciated when a log file and sample code are also provided.
 
