@@ -2,6 +2,25 @@ Revision history for Perl extension Net::FTPSSL.
 
 Version - YYYY/MM/DD
 --------------------
+0.20 2012/01/01 08:30:00
+  - Fixed bug # 73115 where it looks like the response() had unexpected breaks
+    in it.  Instead of returning "xyz message" the FTPS server was returning
+    "x" on one line and "yz message" on another line.  And the code was
+    treating "x" as the entire response (since there was no "-" after it.)
+    Fixed so that if a response starts with a number that's less than 3
+    digits with nothing else following it, to assume we hit this bug.
+    The risk to this fix is that we might try to read past the response
+    on some other server and cause things to hang.  So that's an issue to
+    keep an eye out on after this release.
+  - Fixed minor issue with "HELP" not supported on some boxes.  If this happens
+    supported() will now always return false unless you use OverrideHELP.
+  - Now prints the hash values chosen for new() to the logs.
+  - Fixed so scrubbing out sensitive info from the logs is only done when debug
+    is turned on instead of doing it all the time.
+  - Reorganized the options to new() in the POD to put the less useful and
+    special case options to new() last.
+  - Other minor POD corrections and additions.
+
 0.19 2011/09/26 08:30:00
   - If you use SSL_Advanced, it now writes to STDERR that you are using a
     depreciated feature.

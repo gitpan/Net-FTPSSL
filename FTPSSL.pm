@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : cleach <cleach at cpan dot org>
 # Created : 01 March 2005
-# Version : 0.19
+# Version : 0.20
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -24,7 +24,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.19";
+$VERSION = "0.20";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -107,11 +107,14 @@ sub new {
   my $pres_ts      = $arg->{PreserveTimestamp} || 0;
   my $use_logfile  = $debug && (defined $arg->{DebugLogFile} &&
                                 $arg->{DebugLogFile} ne "");
-  my $localaddr    = $arg->{LocalAddr};
+  my $localaddr    = $ssl_args{LocalAddr} || $arg->{LocalAddr};
 
-  # Used to work arround FTPS servers behaving badly!
+  # Used to work arround some FTPS servers behaving badly!
   my $pasvHost     = $arg->{OverridePASV};
   my $fixHelp      = $arg->{OverrideHELP};
+
+  # Used to emulate bug # 73115 (Expects an offset on where to insert "\n".
+  my $emulate_bug  = $arg->{EmulateBug} || 0;   # Undocumented feature.
 
 
   # Determine where to write the Debug info to ...
@@ -127,7 +130,6 @@ sub new {
      unless ( $f_exists ) {
         print $FTPS_ERROR "\nNet-FTPSSL Version: $VERSION\n\n";
         print $FTPS_ERROR "Perl: $pv,  OS: $^O\n\n";
-        print $FTPS_ERROR "Server (port): $host ($port)\n\n";
      } else {
         print $FTPS_ERROR "\n\n";
      }
@@ -142,7 +144,12 @@ sub new {
 
      print STDERR "\nNet-FTPSSL Version: $VERSION\n\n";
      print STDERR "Perl: $pv,  OS: $^O\n\n";
-     print STDERR "Server (port): $host ($port)\n\n";
+  }
+
+  if ( $debug ) {
+     _print_LOG (undef, "Server (port): $host ($port)\n\n");
+     _print_LOG (undef, "Keys: (" . join ("), (", keys %${arg}) . ")\n");
+     _print_LOG (undef, "Values: (" . join ("), (", values %${arg}) . ")\n\n");
   }
 
   # Determines if we die if we will also need to write to the error log file ...
@@ -271,6 +278,7 @@ sub new {
   ${*$obj}{OverridePASV} = $pasvHost;
   ${*$obj}{dcsc_mode}    = FTPS_PASV;
   ${*$obj}{mySocketOpts} = \%socketArgs;
+  ${*$obj}{EmulateBug}   = $emulate_bug;
 
   ${*$obj}{ftpssl_filehandle} = $FTPS_ERROR  if ( $debug == 2 );
   $FTPS_ERROR = undef;
@@ -1796,7 +1804,8 @@ sub _help {
    # Now see if we've cached the result previously ...
    if ($all_cmds && exists ${*$self}{help_cmds_msg}) {
       ${*$self}{last_ftp_msg} = ${*$self}{help_cmds_msg};
-      return ( ${*$self}{help_cmds_found} );
+      my $hlp = ${*$self}{help_cmds_found};
+      return ( (defined $hlp) ? $hlp : \%help );
 
    } elsif (exists ${*$self}{"help_${cmd}_msg"}) {
       ${*$self}{last_ftp_msg} = ${*$self}{"help_${cmd}_msg"};
@@ -2028,7 +2037,7 @@ sub command {
 }
 
 # -----------------------------------------------------------------------------
-# Some responses take multiple lines to finish. ("211-" vs "211 ")
+# Some responses take multiple lines to finish. ("211-" [more] vs "211 " [done])
 # Some responses have CR's embeded in them.  (ie: no code in the next line)
 # Sometimes the data channel response comes with the open data connection msg.
 #     (Especially if the data channel is not encrypted or the file is small.)
@@ -2036,7 +2045,7 @@ sub command {
 # current response or return the wrong code if you get into the next response!
 #     (And will probably hang the next time response() is called.)
 # So far the only thing I haven't seen is a call to sysread() returning a
-# partial line response!
+# partial line response!  (Drat, that just happened!  See 0.20 Change notes.)
 # -----------------------------------------------------------------------------
 # Called by both Net::FTPSSL and IO::Socket::INET classes.
 # -----------------------------------------------------------------------------
@@ -2082,35 +2091,40 @@ sub response {
      foreach my $line ( @lines ) {
        if ( $remember ) {
           # Continuing to save the next response for next time ...
-          _print_LOG ( $self, "Saving rest of the next response! ($line)\n" ) if ${*$self}{debug};
+          _print_LOG ( $self, "Saving rest of the next response! ($line)\n" )  if ( ${*$self}{debug} );
           ${*$self}{next_ftp_msg} .= "\015\012" . $line;
           next;
        }
 
        if ( $done ) {
           # We read past the end of the current response into the next one ...
-          _print_LOG ( $self, "Attempted to read past end of response! ($line)\n" ) if ${*$self}{debug};
+          _print_LOG ( $self, "Attempted to read past end of response! ($line)\n" )  if ( ${*$self}{debug} );
           ${*$self}{next_ftp_msg} = $line;
           $remember = 1;
           next;
        }
 
+       # Check if the response is complete ...
        if ( $line =~ m/^(\d+)([-\s]?)(.*)$/s ) {
           ($code, $sep, $desc) = ($1, $2, $3);
-          $sep = ""  unless (defined $sep);
+
+          # Fix for bug # 73115 ...
+          $sep = "-"  if (length ($code) < 3 && $sep eq "" and $desc eq "");
        }
 
        # Save the unedited message ...
        ${*$self}{last_ftp_msg} .= $line;
 
-       # Do we need to hide a value in the logged response ???
-       if ( exists ( ${*$self}{_hide_value_in_response_} ) ) {
-         my $val = ${*$self}{_hide_value_in_response_};
-         my $mask = ${*$self}{_mask_value_in_response_} || "????";
-         $line =~ s/$val/<$mask>/g;
-       }
+       if (${*$self}{debug}) {
+          # Do we need to hide a value in the logged response ???
+          if ( exists ( ${*$self}{_hide_value_in_response_} ) ) {
+            my $val = ${*$self}{_hide_value_in_response_};
+            my $mask = ${*$self}{_mask_value_in_response_} || "????";
+            $line =~ s/$val/<$mask>/g;
+          }
 
-       _print_LOG ( $self, $prefix . $line . "\n" ) if ${*$self}{debug};
+          _print_LOG ( $self, $prefix . $line . "\n" );
+       }
 
        if ( $sep eq '-' ) {
           ${*$self}{last_ftp_msg} .= "\n";       # Restore the internal <CR>.
@@ -2120,7 +2134,23 @@ sub response {
      }    # End for $line loop
   }       # End while $sep loop
 
-  return substr( $code, 0, 1 );     # The 1st digit of the 3 digit code!
+  if (${*$self}{EmulateBug}) {
+     # So I can test out the rest of the code by inserting random "\n" into
+     # the response.  Bug # 73115 did this for the code above, but I also
+     # needed to debug the rest of the class when this happened, and I don't
+     # have a server that does this.
+     my $tmp = "." x ${*$self}{EmulateBug};
+     ${*$self}{last_ftp_msg} =~ s/^($tmp)/$1\n/;
+     if ( ${*$self}{debug} ) {
+        $tmp = substr( ${*$self}{last_ftp_msg}, 0, 1 );
+        _print_LOG ( $self, "(start-bug-fix-start-bug-fix)\n" );
+        _print_LOG ( $self, ${*$self}{last_ftp_msg} );
+        _print_LOG ( $self, "\n========== ($tmp) ===========\n" );
+     }
+  }
+
+  # Returns the 1st digit of the 3 digit code!
+  return substr( ${*$self}{last_ftp_msg}, 0, 1 );
 }
 
 sub last_message {
@@ -2237,7 +2267,7 @@ sub _fmt_num {
 }
 
 #-----------------------------------------------------------------------
-# To assist in debugging new features for this class ...
+# To assist in debugging the Certificate hash for this class ...
 #-----------------------------------------------------------------------
 
 sub _debug_print_hash
@@ -2333,14 +2363,13 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.19
+=head1 VERSION 0.20
 
 =head1 SYNOPSIS
 
   use Net::FTPSSL;
 
   my $ftps = Net::FTPSSL->new('ftp.yoursecureserver.com', 
-                              Port => 21,
                               Encryption => EXP_CRYPT,
                               Debug => 1) 
     or die "Can't open ftp.yoursecureserver.com\n$Net::FTPSSL::ERRSTR";
@@ -2402,18 +2431,10 @@ B<useSSL> - Use this option to connect to the server using SSL instead of TLS.
 TLS is the default encryption type and the more secure of the two protocols.
 Set B<useSSL =E<gt> 1> to use SSL.
 
-B<Timeout> - Set a connection timeout value. Default value is 120.
-
-B<LocalAddr> - Local address to use for all socket connections, this argument
-will be passed to all L<IO::Socket::INET> calls.
-
 B<PreserveTimestamp> - During all I<puts> and I<gets>, attempt to preserve the
 file's timestamp.  By default it will not preserve the timestamps.
 
-B<Buffer> - This is the block size that I<Net::FTPSSL> will use when a transfer
-is made. Default value is 10240.
-
-B<Trace> - Turns on/off put/get download tracing to STDERR.  Default is off.
+B<Trace> - Turns on/off (1/0) put/get download tracing to STDERR.  Default is off.
 
 B<Debug> - This turns the debug tracing option on/off. Default is off. (0,1,2)
 
@@ -2440,9 +2461,13 @@ details on this and other options available.  If an option provided here
 conflicts with other options we would normally use, the entries in this hash
 take precedence.
 
-B<SSL_Advanced> - Depreciated, use I<SSL_Client_Certificate> instead.  This is
-now just an alias for I<SSL_Client_Certificate>.  If both are used, this
-option is ignored.
+B<Buffer> - This is the block size that I<Net::FTPSSL> will use when a transfer
+is made. Default value is 10240.
+
+B<Timeout> - Set a connection timeout value. Default value is 120.
+
+B<LocalAddr> - Local address to use for all socket connections, this argument
+will be passed to all L<IO::Socket::INET> calls.
 
 B<OverridePASV> - Some I<FTPS> servers sitting behind a firewall incorrectly
 return their local IP Address instead of their external IP Address used
@@ -2460,6 +2485,10 @@ This option supports three distinct modes to support your needs.  You can pass
 a reference to an array that lists all the B<FTP> commands your sever supports,
 you can set it to B<1> to say all commands are supported, or set it to B<0> to
 say none of the commands are supported.  See I<supported()> for more details.
+
+B<SSL_Advanced> - Depreciated, use I<SSL_Client_Certificate> instead.  This is
+now just an alias for I<SSL_Client_Certificate> for backwards compatibility.
+If both are used, this option is ignored.
 
 =back
 
@@ -2498,6 +2527,13 @@ protocol to use, you may call this function a second time to swap to the other
 B<EPSV> Protocol.
 
 This method returns true if it succeeds, or false if it fails.
+
+=item set_croak( [1/0] )
+
+Used to turn the I<Croak> option on/off after the I<Net::FTPSSL> object has been
+created.  It returns the previous I<Croak> settings before the change is made.
+If you don't provide an argument, all it does is return the current setting.
+Provided in case the I<Croak> option proves to be too restrictive in some cases.
 
 =item list( [DIRECTORY [, PATTERN]] )
 
@@ -2798,10 +2834,11 @@ on using this function.
 
 =item supported( CMD [,SITE_OPT] )
 
-Returns TRUE if the remote server supports the given command.  I<CMD> must match
-exactly.  If the I<CMD> is SITE and I<SITE_OPT> is supplied, it will also check
-if the specified I<SITE_OPT> sub-command is supported.  Not all servers will
-support the use of I<SITE_OPT>.  This function ignores the B<Croak> request.
+Returns B<TRUE> if the remote server supports the given command.  I<CMD> must
+match exactly.  If the I<CMD> is SITE and I<SITE_OPT> is supplied, it will also
+check if the specified I<SITE_OPT> sub-command is supported.  Not all servers
+will support the use of I<SITE_OPT>.  This function ignores the B<Croak>
+request.
 
 It determines if a command is supported by calling B<HELP> and parses the
 results for a match.  The results are cached so B<HELP> is only called once.
@@ -2811,8 +2848,14 @@ clear text, causing the encrypted channel to break.  In that case you will need
 to override this method for things to work correctly with these non-conforming
 servers.  See the I<OverrideHELP> option in the constructor for how to do this.
 
+Some servers don't support the B<HELP> command itself!  When this happens, this
+method will always return B<FALSE> unless you set the I<OverrideHELP> option in
+the constructor.
+
 This method is used internally for conditional logic only when checking if the
-following I<FTP> commands are allowed: B<ALLO>, B<NOOP>, B<MFMT>, and B<MDTM>.
+following 4 I<FTP> commands are allowed: B<ALLO>, B<NOOP>, B<MFMT>, and B<MDTM>.
+The B<ALLO> command is used with all I<put>/I<get> command sequences.  The other
+three are not checked that often.
 
 =item last_message() or message()
 
@@ -2832,13 +2875,6 @@ FTPS server.  The status is the first digit from the full 3 digit response code.
 
 The possible values are exposed via the following B<7> constants:
 CMD_INFO, CMD_OK, CMD_MORE, CMD_REJECT, CMD_ERROR, CMD_PROTECT and CMD_PENDING.
-
-=item set_croak( [1/0] )
-
-Used to turn the I<Croak> option on/off after the I<Net::FTPSSL> object has been
-created.  It returns the previous I<Croak> settings before the change is made.
-If you don't provide an argument, all it does is return the current setting.
-Provided in case the I<Croak> option proves to be too restrictive in some cases.
 
 =item set_callback( [cb_func_ref, end_cb_func_ref [, cb_data_ref]] )
 
@@ -2942,13 +2978,13 @@ collection of modules (libnet).
 
 Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
 and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
-L<http://search.cpan.org/~cleach/Net-FTPSSL-0.19/FTPSSL.pm>.
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.20/FTPSSL.pm>.
 
 Patches are appreciated when a log file and sample code are also provided.
 
 =head1 COPYRIGHT
 
-Copyright (c) 2009 to 2011 Curtis Leach. All rights reserved.
+Copyright (c) 2009 - 2012 Curtis Leach. All rights reserved.
 
 Copyright (c) 2005 Marco Dalla Stella. All rights reserved.
 
