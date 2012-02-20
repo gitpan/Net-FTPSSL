@@ -2,6 +2,28 @@ Revision history for Perl extension Net::FTPSSL.
 
 Version - YYYY/MM/DD
 --------------------
+0.21 2012/02/15 08:30:00
+  - Fixed bad call to _croak_or_return () in _get_data_channel() when dealing
+    with failed certificates for data connections.
+  - Bug # 74547, a request to support ftp PRET command for distributed FTP data
+    channel transfers.  New option to execute PRET before all PASV calls.
+  - updated t/10-complex.t to dynamically check if PRET is needed.
+  - Bug # 74035, as of Perl 5.12, uc($x) gives warning if $x is undef.  Added
+    checks to avoid these warnings.  Did via [ uc($x||""); ]
+  - Fixed both test cases to no longer send Port as undefined to get rid of
+    warnings in log file. (Passing undef wasn't realistic, was just convenient.)
+  - t/10-complex.t now explicity checks if any warnings are generated and does
+    a request for feadback instead of as an error if any are found.  Should help
+    considerably with debugging any code changes in the future.
+  - Added new internal method _feat() to get additional commands to be
+    recognized by supported().
+  - Enhanced _help() in parsing it's response from the server & other significnt
+    enhancements.  Major rewrite of this one method.
+  - Above rewite uncovered bug in t/10-complex.t to fix in a supported() test.
+  - Did some tweaking to the workings of the OverrideHELP option due to changes
+    in _help() & supported().
+  - Updated POD for supported() to describe changes to functionality.
+
 0.20 2012/01/01 08:30:00
   - Fixed bug # 73115 where it looks like the response() had unexpected breaks
     in it.  Instead of returning "xyz message" the FTPS server was returning
@@ -11,7 +33,7 @@ Version - YYYY/MM/DD
     digits with nothing else following it, to assume we hit this bug.
     The risk to this fix is that we might try to read past the response
     on some other server and cause things to hang.  So that's an issue to
-    keep an eye out on after this release.
+    keep an eye out for after this release.
   - Fixed minor issue with "HELP" not supported on some boxes.  If this happens
     supported() will now always return false unless you use OverrideHELP.
   - Now prints the hash values chosen for new() to the logs.
@@ -40,15 +62,21 @@ Version - YYYY/MM/DD
     the README file for the needed modifications before running the test!
 
 0.18 2011/07/29 08:30:00
+  - Added SSL_Client_Certificate to support client certificates on the data
+    channel as well as the command channel. Bug ID: 69327.
+  - Depreciated SSL_Advanced in favor of SSL_Client_Certificate.  SSL_Advanced
+    is now just an alias for SSL_Client_Certificate for backwards compatibility.
+    I just feel the new name better describes what we are trying to do with it
+    now that this feature is supported.
   - More fixes/clarifications to the POD text.
   - Fixed minor wild card issue with LIST & NLST if "+" was in the file name.
-  - Added LocalAddr option to new().  Works against both the command channel
-    and the data channel.
   - Added restart() function to be compatable with Net::FTP for restarts.
   - Added ability to restart downloads/get() where previous attempt left off.
   - Added ability to restart uploads/put() where the previous attempt left off.
   - Added append() command [APPE], it also uses OFFSET, but doesn't send the
     REST command to the server.
+  - Added LocalAddr option to new().  Works against both the command channel
+    and the data channel.
   - Masks out the user name used when generating a log file.  Similar to how
     this is already done for the password.  Except it must also hide it in the
     response to USER & PASS.  Only masked when written to the log, message()
@@ -58,17 +86,11 @@ Version - YYYY/MM/DD
     for some of the connection values to make it easier for me to quickly
     rerun tests during development without having to key in ansers to questions
     with no good default values over & over again.
-  - Added SSL_Client_Certificate to support client certificates on the data
-    channel as well as the command channel. Bug ID: 69327.
-  - Depreciated SSL_Advanced in favor of SSL_Client_Certificate.  SSL_Advanced
-    is now just an alias for SSL_Client_Certificate for backwards compatibility.
-    I just feel the new name better describes what we are trying to do with it
-    now that this feature is supported.
-  - Wrote t/20-certificate.t to test this out.  But this & t/10-complex.t
-    are probably incompatable in most settings.  Anyone else trying to use
-    this test case will have to modify this code to point to their certificate
-    and provide it's password, since I'm not going to publish my test
-    client certificate.
+  - Wrote t/20-certificate.t to test certificates out.  But this and
+    t/10-complex.t are probably incompatable in most settings.  Anyone else
+    trying to use this test case will have to modify this code to point to their
+    certificate and provide it's password, since I'm not going to publish my
+    test client certificate.
   - Calls to command() now return a reference to this class so that you can
     code something like: "if ($ftps->command("NOOP")->response() == CMD_OK)".
     This should be compatible since it shouldn't be called externally, and

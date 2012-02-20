@@ -25,6 +25,10 @@ BEGIN { use_ok('Net::FTPSSL') }    # Test # 1
 
 sleep (1);  # So test 1 completes before the message prints!
 
+# So can more easily detect warnings instead of trolling my logs.
+my $trap_warnings = "";
+$SIG{__WARN__} = sub { $trap_warnings .= $_[0]; };
+
 # These log files need to be global ...
 my $debug_log1 = "./t/BABY_1_new.txt";
 my $debug_log2 = "./t/BABY_2_new.txt";
@@ -44,7 +48,7 @@ SKIP: {
 
     $address = ask2("Server address ( host[:port] )", undef, undef, $ENV{FTPSSL_SERVER});
     ( $server, $port ) = split( /:/, $address );
-    # $port = 21 unless $port;   # Let FTPSSL provide the default port.
+    $port = ""  unless (defined $port);   # Gets rid of warning while FTPSSL provides default port!
 
     $user = ask2("\tUser", "anonymous", undef, $ENV{FTPSSL_USER});
 
@@ -86,8 +90,8 @@ SKIP: {
     # This section initializes an unsupported feature to Net::FTPSSL.
     # Code is left here so that I can easily revisit it in the future if needed.
     # That's why option SSL_Client_Certificate is commented out for %ftps_opts
-    # below but left uncommented here.
-    # Do not use this feature unless you absolutely have no choice!
+    # below but left uncommented here.  This feature tested in other test file.
+    # So do not use this feature here unless you absolutely have no choice!
     my %advanced_hash = ( SSL_version => ($encrypt_mode ? "SSLv23" : "TLSv1"),
                           Timeout => 22 );
     # -----------------------------------------------------------
@@ -126,7 +130,7 @@ SKIP: {
        check_for_help_issue ( $server, \%ftps_opts, $user, $pass );
     }
 
-    if ( $psv_mode eq "P" ) {
+    if ( $psv_mode eq "P" && (! exists $ftps_opts{Prev}) ) {
        # Will dynamically add OverridePASV for future calls to new() if required ...
        unless (check_for_pasv_issue ( $server, \%ftps_opts, $user, $pass, $mode )) {
           skip ( "PASV not working, there are issues with your FTPS server.",
@@ -139,13 +143,15 @@ SKIP: {
     $ftps_opts{Croak} = 1;
 
     print STDERR "\n**** Starting the real server test ****\n";
+    $trap_warnings = "";
 
     # Writes logs to STDERR which this script redirects to a file ...
     my $ftp = Net::FTPSSL->new( $server, \%ftps_opts );
 
     isa_ok( $ftp, 'Net::FTPSSL', 'Net::FTPSSL object creation' );
 
-    ok( $ftp->login ($user, $pass), "Login to $server" );
+    ok ( $ftp->login ($user, $pass), "Login to $server" );
+    # is ( $trap_warnings, "", "New & Login produce no warnings (OK to fail this test)" );
 
     # Turning off croak now that our environment is correct!
     $ftp->set_croak (0);
@@ -170,8 +176,11 @@ SKIP: {
     # -------------------------------------------------------------------------
     # Verifying extra connections work as expected and don't interfere
     # with the logs for this main test going to STDERR ...
+    # Can ignore any warnings from this section ...
     # -------------------------------------------------------------------------
+    my $save_warnings = $trap_warnings;
     test_log_redirection ( $server, \%ftps_opts, $user, $pass, $psv_mode );
+    $trap_warnings = $save_warnings;
 
     # -------------------------------------------------------------------------
     # Back to processing the real test cases ...
@@ -211,7 +220,7 @@ SKIP: {
        my @sites = sort (keys %{$site});
        ok( $ftp->supported("SITE", $sites[0]), "Verifying SITE $sites[0] is supported" );
     } else {
-       ok( 0, "verifying \"supported ('SITE', <cmd>)\" is supported!  List of SITE cmds available" );
+       ok( 1, "verifyed \"supported ('SITE', <cmd>)\" is not supported!  List of SITE cmds not available" );
     }
 
     ok( $ftp->noop(), "Noop test" );
@@ -386,6 +395,13 @@ SKIP: {
     # Free so any context messages will still appear in the log file.
     $ftp = undef;
 
+    # -----------------------------------------
+    # Did the code generate any warnings ???
+    # -----------------------------------------
+    if ( $trap_warnings ne "" ) {
+       diag ("\nCheck out the following warnings from Net-FTPSSL and report to developer with logs:\n$trap_warnings\n");
+    }
+
     # Restore STDERR now that the tests are done!
     open (STDERR, ">&OLDERR");
     if (1 == 2) {
@@ -406,7 +422,7 @@ sub valid_credentials {
    my $user = shift;
    my $pass = shift;
 
-   print STDERR "\nValidating the user input credentials against the server ...\n";
+   print STDERR "\nValidating the user input credentials & PRET test against the server ...\n";
 
    my $ftps = Net::FTPSSL->new( $server, $opts );
 
@@ -421,6 +437,12 @@ sub valid_credentials {
       --$skipper;
 
       if ( $sts ) {
+         if ($ftps->quot ("PRET", "LIST") == CMD_OK) {
+            diag ("\n=========================================================");
+            diag ('=== Adding option "Pret" to all future calls to new() ===');
+            diag ("=========================================================\n");
+            $opts->{Pret} = 1;   # Assumes all future calls will need!
+         }
          $ftps->quit ();
       } else {
          diag ("\n=========================================================");

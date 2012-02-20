@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : cleach <cleach at cpan dot org>
 # Created : 01 March 2005
-# Version : 0.20
+# Version : 0.21
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -24,7 +24,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.20";
+$VERSION = "0.21";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -108,6 +108,7 @@ sub new {
   my $use_logfile  = $debug && (defined $arg->{DebugLogFile} &&
                                 $arg->{DebugLogFile} ne "");
   my $localaddr    = $ssl_args{LocalAddr} || $arg->{LocalAddr};
+  my $pret         = $arg->{Pret} || 0;
 
   # Used to work arround some FTPS servers behaving badly!
   my $pasvHost     = $arg->{OverridePASV};
@@ -243,7 +244,6 @@ sub new {
   # --------------------------------------
   if ( defined $fixHelp ) {
      my %helpHash;
-     my %emptyHash;
 
      if ( ref ($fixHelp) eq "ARRAY" ) {
         foreach (@{$fixHelp}) {
@@ -253,13 +253,15 @@ sub new {
        ${*$obj}{OverrideHELP} = 1;   # All FTP commands supported ...
      }
 
-     # Set the "cache" arrays used by "_help()" so that it can still be called!
+     # Set the "cache" tags used by "_help()" so that it can still be called!
      ${*$obj}{help_cmds_found} = \%helpHash;
      ${*$obj}{help_cmds_msg} = "214 HELP Command Overriden by request.";
 
      # Will always return false for supported("SITE", "xxx") ...
-     ${*$obj}{help_SITE_found} = \%emptyHash;
      ${*$obj}{help_SITE_msg} = ${*$obj}{help_cmds_msg};
+
+     # Causes direct calls to _help($cmd) to skip the server hit.
+     ${*$obj}{help_cmds_no_syntax_available} = 1;
   }
   # --------------------------------------
   # End overriding "_help()" ...
@@ -278,12 +280,13 @@ sub new {
   ${*$obj}{OverridePASV} = $pasvHost;
   ${*$obj}{dcsc_mode}    = FTPS_PASV;
   ${*$obj}{mySocketOpts} = \%socketArgs;
+  ${*$obj}{Pret}         = $pret;
   ${*$obj}{EmulateBug}   = $emulate_bug;
 
   ${*$obj}{ftpssl_filehandle} = $FTPS_ERROR  if ( $debug == 2 );
   $FTPS_ERROR = undef;
 
-  # Must be last for debug to work correctly ...
+  # Must be last for certificates to work correctly ...
   if ( (ref ($arg->{SSL_Client_Certificate}) eq "HASH") ||
        (ref ($arg->{SSL_Advanced}) eq "HASH") ) {
      # Reuse the command channel context ...
@@ -369,21 +372,33 @@ sub force_epsv {
 
 sub _pasv {
   my $self = shift;
+  # Leaving the other arguments on the stack (for use by PRET if called)
+
+  my ($host, $port) = ("", "");
+
+  if ( ${*$self}{Pret} ) {
+     unless ( $self->command ("PRET", @_)->response () == CMD_OK ) {
+        $self->_croak_or_return ();
+        return ($host, $port);
+     }
+  }
 
   unless ( $self->command ("PASV")->response () == CMD_OK ) {
-     return $self->_croak_or_return ();
+     $self->_croak_or_return ();
+     return ($host, $port);
   }
 
   # [227] [Entering Passive Mode] ([h1,h2,h3,h4,p1,p2]).
   my $msg = $self->last_message ();
   unless ($msg =~ m/(\d+)\s(.*)\(((\d+,?)+)\)\.?/) {
-     return $self->_croak_or_return (0, "Can't parse the PASV response.");
+     $self->_croak_or_return (0, "Can't parse the PASV response.");
+     return ($host, $port);
   }
 
   my @address = split( /,/, $3 );
 
-  my $host = join( '.', @address[ 0 .. 3 ] );
-  my $port = $address[4] * 256 + $address[5];
+  $host = join( '.', @address[ 0 .. 3 ] );
+  $port = $address[4] * 256 + $address[5];
 
   if ( ${*$self}{OverridePASV} ) {
      my $ip = $host;
@@ -399,12 +414,16 @@ sub _epsv {
   my $ipver = shift;
 
   $self->command ("EPSV", ($ipver == FTPS_EPSV_1) ? "1" : "2");
-  unless ( $self->response () == CMD_OK ) { return $self->_croak_or_return (); }
+  unless ( $self->response () == CMD_OK ) {
+     $self->_croak_or_return ();
+     return ("", "");
+  }
 
   # [227] [Entering Extended Passive Mode] (|||<port>|).
   my $msg = $self->last_message ();
   unless ($msg =~ m/[(](.)(.)(.)(\d+)(.)[)]/) {
-     return $self->_croak_or_return (0, "Can't parse the EPSV response.");
+     $self->_croak_or_return (0, "Can't parse the EPSV response.");
+     return ("", "");
   }
 
   my ($s1, $s2, $s3, $port, $s4) = ($1, $2, $3, $4, $5);
@@ -415,6 +434,7 @@ sub _epsv {
 
 sub prep_data_channel {
   my $self = shift;
+  # Leaving other arguments on the stack (for use by PRET if called via PASV)
 
   # Should only do this for encrypted Command Channels.
   if ( ${*$self}{Crypt} ne CLR_CRYPT ) {
@@ -426,7 +446,7 @@ sub prep_data_channel {
   my $mode = ${*$self}{dcsc_mode};
   my ($host, $port);
   if ( $mode == FTPS_PASV ) {
-     ($host, $port) = $self->_pasv ();
+     ($host, $port) = $self->_pasv (@_);
   } elsif ( $mode == FTPS_EPSV_1 || $mode == FTPS_EPSV_2 ) {
      ($host, $port) = $self->_epsv ($mode);
   } else {
@@ -438,6 +458,9 @@ sub prep_data_channel {
   }
 
   $self->_print_DBG ("--- Host ($host)  Port ($port)\n");
+
+  # Already decided not to call croak earlier if this happens.
+  return (0)   if ($host eq "" || $port eq "");
 
   # Returns if the data channel was established or not ...
   return ( $self->_open_data_channel ($host, $port) );
@@ -492,7 +515,7 @@ sub _get_data_channel {
       my $mode = $ssl_opts{SSL_version};
 
       $io = IO::Socket::SSL->start_SSL ( ${*$self}{data_ch}, \%ssl_opts )
-               or return _croak_or_return ( $io, undef,
+               or return $self->_croak_or_return ( 0,
                                       "$mode: " . IO::Socket::SSL::errstr () );
 
    } elsif ( ${*$self}{data_prot} eq DATA_PROT_PRIVATE ) {
@@ -529,13 +552,13 @@ sub list {
 
   my $dati = "";
 
-  unless ( $self->prep_data_channel() ) {
-    return ();    # Already decided not to call croak if you get here!
-  }
-
   # "(caller(1))[3]" returns undef if not called by another Net::FTPSSL method!
   my $c = (caller(1))[3];
   my $nlst_flg = ( defined $c && $c eq "Net::FTPSSL::nlst" );
+
+  unless ( $self->prep_data_channel( $nlst_flg ? "NLST" : "LIST" ) ) {
+    return ();    # Already decided not to call croak if you get here!
+  }
 
   unless ( $nlst_flg ? $self->_nlst($path) : $self->_list($path) ) {
      $self->_croak_or_return ();
@@ -835,7 +858,7 @@ sub get {
     $fix_cr_issue = 0;
   }
 
-  unless ( $self->prep_data_channel() ) {
+  unless ( $self->prep_data_channel( "RETR", $file_rem ) ) {
     if ( $close_file ) {
        close ($localfd);
        unlink ($file_loc) unless ($offset);
@@ -1258,7 +1281,19 @@ sub _common_put {
     $fix_cr_issue = 0;
   }
 
-  unless ( $self->prep_data_channel() ) {
+  # Set in case we require the use of the PRET command ...
+  my $cmd = "";
+  if ( $func eq "uput" ) {
+     $cmd = "STOU";
+  } elsif ( $func eq "xput" )  {
+     $cmd = "STOR";
+  } elsif ( $func eq "put" )  {
+     $cmd = "STOR";
+  } elsif ( $func eq "append" )  {
+     $cmd = "APPE";
+  }
+
+  unless ( $self->prep_data_channel( $cmd, $file_rem ) ) {
     close ($localfd)  if ($close_file);
     return undef;    # Already decided not to call croak if you get here!
   }
@@ -1480,8 +1515,8 @@ sub site {
 # A true boolean func, should never call croak!
 sub supported {
    my $self = shift;
-   my $cmd = uc (shift);  # uc() converts undef to "".
-   my $site_cmd = uc (shift);
+   my $cmd = uc (shift || "");
+   my $sub_cmd = uc (shift || "");
 
    my $result = 0;        # Assume invalid FTP command
 
@@ -1497,12 +1532,23 @@ sub supported {
    }
 
    # Are we validating a SITE sub-command?
-   if ($result && $cmd eq "SITE" && $site_cmd ne "") {
+   if ($result && $cmd eq "SITE" && $sub_cmd ne "") {
       my $help2 = $self->_help ($cmd);
-      if ( ${*$self}{OverrideHELP} || exists $help2->{$site_cmd} ) {
-         ${*$self}{last_ftp_msg} = "214 The $cmd sub-command $site_cmd is supported.";
+      if ( exists $help2->{$sub_cmd} ) {
+         ${*$self}{last_ftp_msg} = "214 The $cmd sub-command $sub_cmd is supported.";
       } else {
-         ${*$self}{last_ftp_msg} = "502 Unknown $cmd sub-command - $site_cmd.";
+         ${*$self}{last_ftp_msg} = "502 Unknown $cmd sub-command - $sub_cmd.";
+         $result = 0;     # It failed after all!
+      }
+   }
+
+   # Are we validating a FEAT sub-command?
+   if ($result && $cmd eq "FEAT" && $sub_cmd ne "") {
+      my $feat2 = $self->_feat ();
+      if ( exists $feat2->{$sub_cmd} ) {
+         ${*$self}{last_ftp_msg} = "214 The $cmd sub-command $sub_cmd is supported.";
+      } else {
+         ${*$self}{last_ftp_msg} = "502 Unknown $cmd sub-command - $sub_cmd.";
          $result = 0;     # It failed after all!
       }
    }
@@ -1571,8 +1617,8 @@ sub ccc {
 sub quot {
    my $self = shift;
    my $cmd  = shift;
+   my $cmd2 = uc (shift || "");
 
-   my $cmd2 = uc ($cmd);
    $cmd2 = $1  if ( $cmd2 =~ m/^\s*(\S+)(\s|$)/ );
 
    # The following FTP commands are known to open a data channel
@@ -1793,13 +1839,18 @@ sub size {
 sub _help {
    # Only shift off self, bug otherwise!
    my $self = shift;
-   my $cmd = uc ($_[0]);   # Will convert undef to "". (Do not do a shift!)
+   my $cmd = uc ($_[0] || "");   # Converts undef to "". (Do not do a shift!)
 
-   # Check if requesting a list of all commands or details on specific command.
-   my $all_cmds = (! defined $_[0]);
+   # Check if requesting a list of all commands or details on specific commands.
+   my $all_cmds = ($cmd eq "");
    my $site_cmd = ($cmd eq "SITE");
 
    my %help;
+
+   # Only possible if _help() is called before 1st call to supported()!
+   unless ( $all_cmds || exists ${*$self}{help_cmds_msg} ) {
+      $self->_help ();
+   }
 
    # Now see if we've cached the result previously ...
    if ($all_cmds && exists ${*$self}{help_cmds_msg}) {
@@ -1811,9 +1862,18 @@ sub _help {
       ${*$self}{last_ftp_msg} = ${*$self}{"help_${cmd}_msg"};
       my $hlp = ${*$self}{"help_${cmd}_found"};
       return ( (defined $hlp) ? $hlp : \%help );
+
+   } elsif ( exists ${*$self}{help_cmds_no_syntax_available} ) {
+      ${*$self}{last_ftp_msg} = "503 Syntax for ${cmd} is not available.";
+      # $self->_print_DBG ( "<<+ " . ${*$self}{last_ftp_msg} . "\n" );
+      return ( \%help );
    }
 
-   $self->command ("HELP", @_);
+   if ($all_cmds) {
+      $self->command ("HELP");
+   } else {
+      $self->command ("HELP", @_);
+   }
 
    # Now lets see if we need to parse the result to get a hash of the
    # supported FTP commands on the other server ...
@@ -1823,14 +1883,19 @@ sub _help {
 
       foreach my $line (@lines) {
          # Strip off the code & separator or leading blanks if multi line.
-         $line =~ s/(^[0-9]+[\s-])|(^\s+)//;
+         $line =~ s/(^[0-9]+[\s-]?)|(^\s+)//;
+         my $lead = $1;
 
-         my $lead = (defined $2);   # Flag tells if partial multi line response.
+         next  if ($line eq "");
+
+         # Skip over the start/end part of the response ...
+         # Doesn't work for all servers!
+         # next  if ( defined $lead && $lead =~ m/^\d+[\s-]?$/ );
 
          my @lst = split (/[\s,.]+/, $line);  # Break into individual commands
 
          if ( $site_cmd && $lst[0] eq "SITE" && $lst[1] =~ m/^[A-Z]+$/ ) {
-            $help{$lst[1]} = 1;    # Each line: SITE CMD mixed-case-usage
+            $help{$lst[1]} = 1;    # Each line: "SITE CMD mixed-case-usage"
          }
          # Now only process if nothing is in lower case (ie: its a comment)
          # All commands must be in upper case, some special chars not allowed.
@@ -1842,25 +1907,108 @@ sub _help {
          }
       }
 
-      # If we don't find anything, it's a problem.  So don't cache if so ...
+      # If we don't find anything, it's a problem.  So don't cache if false ...
       if (scalar (keys %help) > 0) {
          if ($all_cmds) {
-            # Add the assumed OPTS command required if FEAT is supported!
-            # Even though not all servers support OPTS as is required with FEAT.
-            $help{OPTS} = 1  if ($help{FEAT});     # RFC 2389
+            if ($help{FEAT}) {
+               # Add the assumed OPTS command required if FEAT is supported!
+               # Even though not all servers support OPTS as is required with FEAT.
+               $help{OPTS} = 1;       # RFC 2389
+
+               # Now put any features into the help response as well ...
+               my $feat = $self->_feat ();
+               foreach (keys %{$feat}) {
+                  $help{$_} = $feat->{$_}  unless ($help{$_});
+               }
+            }
 
             ${*$self}{help_cmds_found} = \%help;
             ${*$self}{help_cmds_msg} = $helpmsg;
+
+         } elsif ( ${*$self}{help_cmds_msg} eq $helpmsg ) {
+            # "HELP SITE" just repeated same HELP text as regular "HELP" cmd ...
+            # So can't tell what SITE sub-commands are actually supported here.
+            my %empty;
+            %help = %empty;
+
+            ${*$self}{last_ftp_msg} = ${*$self}{help_SITE_msg} =
+                            "503 Site level help is not available.";
+            $self->_print_DBG ( "<<+ " . ${*$self}{help_SITE_msg} . "\n" );
+            ${*$self}{help_cmds_no_syntax_available} = 1;
+
          } else {
-            ${*$self}{"help_${cmd}_found"} = \%help;
-            ${*$self}{"help_${cmd}_msg"} = $helpmsg;
+            # We got some useful SITE sub-commands to report on.
+            ${*$self}{help_SITE_msg} = $helpmsg;
+            ${*$self}{help_SITE_found} = \%help;
          }
       }
-   } else {
+
+   } elsif ($all_cmds || $site_cmd) {
+      # Got here when the "HELP" or "HELP SITE" commands failed ...
+      $cmd = "cmds"  if ($all_cmds);
       ${*$self}{"help_${cmd}_msg"} = $self->last_message ();
+
+   } else {
+      # All other individual "HELP xxx" commands ...
+      # (on some machines it returns cmd syntax)
+      # You can only get here by calling _help("xxx") directly in your code!
+      my $msg = $self->last_message ();
+      if ( $msg eq ${*$self}{help_cmds_msg} ) {
+         # Repeated the generic "HELP" response ...
+         ${*$self}{last_ftp_msg} = ${*$self}{"help_${cmd}_msg"} =
+                         "503 Syntax for ${cmd} is not available.";
+         ${*$self}{help_cmds_no_syntax_available} = 1;
+         $self->_print_DBG ( "<<+ " . ${*$self}{"help_${cmd}_msg"} . "\n" );
+      } else {
+         ${*$self}{"help_${cmd}_msg"} = $msg;
+      }
    }
 
    return (\%help);
+}
+
+#-----------------------------------------------------------------------
+# Returns the list of features supported by this server ...
+#-----------------------------------------------------------------------
+
+sub _feat {
+   my $self = shift;
+
+   my %res;
+
+   # Check to see if we've cached the result previously ...
+   # Must use slightly different nameing convenion than used
+   # in _help() to avoid conflicts.
+   if (exists ${*$self}{help_FEAT_msg2}) {
+      ${*$self}{last_ftp_msg} = ${*$self}{help_FEAT_msg2};
+      my $hlp = ${*$self}{help_FEAT_found2};
+      return ( (defined $hlp) ? $hlp : \%res );
+   }
+
+   if ( $self->command ("FEAT")->response () == CMD_OK ) {
+      my @lines = split (/\n/, $self->last_message ());
+
+      foreach my $line (@lines) {
+         # Strip off the code & separator or leading blanks if multi line.
+         $line =~ s/(^[0-9]+[\s-]?)|(^\s+)//;
+         my $lead = $1;
+
+         # Skip over the start/end part of the response ...
+         next if ( defined $lead && $lead =~ m/^\d+[\s-]?$/ );
+
+         my @lst = split (/[\s,.]+/, $line);  # Break into individual parts
+
+         $res{$lst[0]} = 2;    # Only 1st part is the command ...
+      }
+
+      # Cache the results from this command ...
+      ${*$self}{help_FEAT_found2} = \%res;
+   }
+
+   # Cache the response from this command ...
+   ${*$self}{help_FEAT_msg2} = $self->last_message ();
+
+   return (\%res);
 }
 
 #-----------------------------------------------------------------------
@@ -1940,8 +2088,8 @@ sub _croak_or_return {
       $ERRSTR = $msg || ${*$self}{last_ftp_msg};
 
       # Do 1st so updated if caller trapped the Croak!
-      if ( defined $replace_mode && uc ($msg) ne ""  ) {
-         if ($replace_mode && uc (${*$self}{last_ftp_msg}) ne "" ) {
+      if ( defined $replace_mode && uc ($msg || "") ne ""  ) {
+         if ($replace_mode && uc (${*$self}{last_ftp_msg} || "") ne "" ) {
             ${*$self}{last_ftp_msg} .= "\n" . $err . " " . $msg;
          } else {
             ${*$self}{last_ftp_msg} = $err . " " . $msg;
@@ -1965,7 +2113,7 @@ sub _croak_or_return {
          }
 
          # Only do if writing the message to the error log file ...
-         if ( defined $replace_mode && uc ($msg) ne "" &&
+         if ( defined $replace_mode && uc ($msg || "") ne "" &&
               ${*$self}{debug} == 2 ) {
             _print_LOG ( $self, "<<+ $err " . $msg . "\n" );
          }
@@ -1974,7 +2122,7 @@ sub _croak_or_return {
       }
 
       # Handles both cases of writing to STDERR or the error log file ...
-      if ( defined $replace_mode && uc ($msg) ne "" && ${*$self}{debug} ) {
+      if ( defined $replace_mode && uc ($msg || "") ne "" && ${*$self}{debug} ) {
          _print_LOG ( $self, "<<+ $err " . $msg . "\n" );
       }
    }
@@ -2363,7 +2511,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.20
+=head1 VERSION 0.21
 
 =head1 SYNOPSIS
 
@@ -2434,6 +2582,9 @@ Set B<useSSL =E<gt> 1> to use SSL.
 B<PreserveTimestamp> - During all I<puts> and I<gets>, attempt to preserve the
 file's timestamp.  By default it will not preserve the timestamps.
 
+B<Pret> - Set if you are talking to a distributed FTPS server like I<DrFtpd>
+that needs a B<PRET> command issued before all calls to B<PASV>.
+
 B<Trace> - Turns on/off (1/0) put/get download tracing to STDERR.  Default is off.
 
 B<Debug> - This turns the debug tracing option on/off. Default is off. (0,1,2)
@@ -2485,6 +2636,9 @@ This option supports three distinct modes to support your needs.  You can pass
 a reference to an array that lists all the B<FTP> commands your sever supports,
 you can set it to B<1> to say all commands are supported, or set it to B<0> to
 say none of the commands are supported.  See I<supported()> for more details.
+
+This option can also be usefull when your server doesn't support the I<HELP>
+command itself and you need to trigger some of the conditional logic.
 
 B<SSL_Advanced> - Depreciated, use I<SSL_Client_Certificate> instead.  This is
 now just an alias for I<SSL_Client_Certificate> for backwards compatibility.
@@ -2835,13 +2989,16 @@ on using this function.
 =item supported( CMD [,SITE_OPT] )
 
 Returns B<TRUE> if the remote server supports the given command.  I<CMD> must
-match exactly.  If the I<CMD> is SITE and I<SITE_OPT> is supplied, it will also
-check if the specified I<SITE_OPT> sub-command is supported.  Not all servers
-will support the use of I<SITE_OPT>.  This function ignores the B<Croak>
-request.
+match exactly.  This function will ignore the B<Croak> request.
+
+If the I<CMD> is SITE or FEAT and I<SITE_OPT> is supplied, it will also check
+if the specified I<SITE_OPT> sub-command is supported by that command.  Not
+all servers will support the use of I<SITE_OPT>.
 
 It determines if a command is supported by calling B<HELP> and parses the
-results for a match.  The results are cached so B<HELP> is only called once.
+results for a match.  And if B<FEAT> is supported it calls B<FEAT> and adds
+these commands to the B<HELP> list.  The results are cached so B<HELP> and
+B<FEAT> are only called once.
 
 Some rare servers send the B<HELP> results partially encrypted and partially in
 clear text, causing the encrypted channel to break.  In that case you will need
@@ -2978,7 +3135,7 @@ collection of modules (libnet).
 
 Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
 and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
-L<http://search.cpan.org/~cleach/Net-FTPSSL-0.20/FTPSSL.pm>.
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.21/FTPSSL.pm>.
 
 Patches are appreciated when a log file and sample code are also provided.
 

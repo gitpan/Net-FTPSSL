@@ -70,6 +70,7 @@ SKIP: {
     $address = ask2("Server address ( host[:port] )", undef, undef, $ENV{FTPSSL_SERVER});
     ( $server, $port ) = split( /:/, $address );
     # $port = 21 unless $port;   # Let FTPSSL provide the default port.
+    $port = "" unless (defined $port);
 
     $user = ask2("\tUser", "anonymous", undef, $ENV{FTPSSL_USER});
 
