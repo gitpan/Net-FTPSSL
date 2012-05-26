@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : cleach <cleach at cpan dot org>
 # Created : 01 March 2005
-# Version : 0.21
+# Version : 0.22
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -24,7 +24,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.21";
+$VERSION = "0.22";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -384,7 +384,21 @@ sub _pasv {
   }
 
   unless ( $self->command ("PASV")->response () == CMD_OK ) {
-     $self->_croak_or_return ();
+     if ( ${*$self}{Pret} ) {
+        # Prevents infinite recursion on failure if PRET is already set ...
+        $self->_croak_or_return ();
+
+     } elsif ( $self->last_message () =~ m/(^|\s)PRET($|[\s.!?])/i ) {
+        # Turns PRET on for all future calls to _pasv()!
+        # Stays on even if it still doesn't work with PRET!
+        ${*$self}{Pret} = 1;
+        $self->_print_DBG ("<<+ Auto-adding PRET option!\n");
+        ($host, $port) = $self->_pasv (@_);
+
+     } else {
+        $self->_croak_or_return ();
+     }
+
      return ($host, $port);
   }
 
@@ -1586,10 +1600,12 @@ sub ccc {
    # Save before stop_SSL() removes the bless.
    my $bless_type = ref ($self);
 
+   # -------------------------------------------------------------------------
    # Stop SSL, but leave the socket open!
    # Converts $self to IO::Socket::INET object instead of Net::FTPSSL
    # NOTE: SSL_no_shutdown => 1 doesn't work on some boxes, and when 0,
    #       it hangs on others without the SSL_fast_shutdown => 1 cmd.
+   # -------------------------------------------------------------------------
    unless ( $self->stop_SSL ( SSL_no_shutdown => 0, SSL_fast_shutdown => 1 ) ) {
       return $self->_croak_or_return (undef, "Command Channel downgrade failed!");
    }
@@ -1598,17 +1614,34 @@ sub ccc {
    bless ( $self, $bless_type );
    ${*$self}{_SSL_opened} = 0;      # To get rid of warning on quit ...
 
+   # -------------------------------------------------------------------------
    # This is a hack, but seems to resolve the command channel corruption
    # problem where 1st command or two afer CCC may fail or look strange ...
-   # I've even caught it a few times sending back 2 independant responses.
+   # I've even caught it a few times sending back 2 independant OK responses
+   # to a single command!
+   # -------------------------------------------------------------------------
    my $ok = CMD_ERROR;
    foreach ( 1...3 ) {
       $ok = $self->command ($ccc_fix_cmd)->response ();
       last  if ( $ok == CMD_OK );
    }
 
+   if ( $ok == CMD_OK ) {
+      # Complete the hack, now force a failure response!
+      # And if the server was still confused ?
+      # Keep asking for responses until we get our error!
+      $self->command ("xxxx");
+      while ( $self->response () == CMD_OK ) {
+         my $tmp = CMD_ERROR;   # A no-op command for loop body ...
+      }
+   }
+   # -------------------------------------------------------------------------
+   # End hack of CCC command recovery.
+   # -------------------------------------------------------------------------
+
    return ( $self->_test_croak ( $ok == CMD_OK ) );
 }
+
 
 # Allow the user to send a FTP command directly, BE CAREFUL !!
 # Since doing unsupported stuff, we can never call croak!
@@ -1617,24 +1650,28 @@ sub ccc {
 sub quot {
    my $self = shift;
    my $cmd  = shift;
-   my $cmd2 = uc (shift || "");
 
+   # Format the command for testing ...
+   my $cmd2 = uc ($cmd || "");
    $cmd2 = $1  if ( $cmd2 =~ m/^\s*(\S+)(\s|$)/ );
+
+   my $msg = "";   # Assume all is OK ...
 
    # The following FTP commands are known to open a data channel
    if ( $cmd2 eq "STOR" || $cmd2 eq "RETR" ||
         $cmd2 eq "NLST" || $cmd2 eq "LIST" ||
         $cmd2 eq "STOU" || $cmd2 eq "APPE" ) {
-      ${*$self}{last_ftp_msg} = "x22 Data Connections are not supported via " .
-                                "quot().  [$cmd2]";
-      substr (${*$self}{last_ftp_msg}, 0, 1) = CMD_REJECT;
-      $self->_print_DBG ( "<<+ " . ${*$self}{last_ftp_msg} . "\n" );
-      return (CMD_REJECT);
+      $msg = "x23 Data Connections are not supported via quot().  [$cmd2]";
+
+   } elsif ( $cmd2 eq "CCC" ) {
+      $msg = "x22 Why didn't you call CCC directly via it's interface?";
+
+   } elsif ( $cmd2 eq "" ) {
+      $msg = "x21 Where is the needed command?";
    }
 
-   # You must call CCC directly, not through this add hock method ...
-   if ( $cmd2 eq "CCC" ) {
-      ${*$self}{last_ftp_msg} = "x22 Why didn't you call CCC directly?";
+   if ( $msg ne "" ) {
+      ${*$self}{last_ftp_msg} = $msg;
       substr (${*$self}{last_ftp_msg}, 0, 1) = CMD_REJECT;
       $self->_print_DBG ( "<<+ " . ${*$self}{last_ftp_msg} . "\n" );
       return (CMD_REJECT);
@@ -2329,7 +2366,7 @@ sub restart {
    my $self = shift;
    my $offset = shift;
    ${*$self}{net_ftpssl_rest_offset} = $offset;
-   return (undef);
+   return (1);
 }
 
 #-----------------------------------------------------------------------
@@ -2511,7 +2548,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.21
+=head1 VERSION 0.22
 
 =head1 SYNOPSIS
 
@@ -2583,9 +2620,11 @@ B<PreserveTimestamp> - During all I<puts> and I<gets>, attempt to preserve the
 file's timestamp.  By default it will not preserve the timestamps.
 
 B<Pret> - Set if you are talking to a distributed FTPS server like I<DrFtpd>
-that needs a B<PRET> command issued before all calls to B<PASV>.
+that needs a B<PRET> command issued before all calls to B<PASV>.  You only need
+to use this option if the server barfs at the B<PRET> auto-detect logic.
 
-B<Trace> - Turns on/off (1/0) put/get download tracing to STDERR.  Default is off.
+B<Trace> - Turns on/off (1/0) put/get download tracing to STDERR.  The default
+is off.
 
 B<Debug> - This turns the debug tracing option on/off. Default is off. (0,1,2)
 
@@ -2939,25 +2978,6 @@ This issue depends on what OS the FTPS server is running under.  Should they
 be different, the I<ASCII> size will be the I<BINARY> size plus the number of
 lines in the file.
 
-=item restart( OFFSET )
-
-Set the byte offset at which to begin the next data transfer.  I<Net::FTPSSL>
-simply records this value and uses it during the next data transfer.  For
-this reason this method will not return an error, but setting it may cause
-subsequent data transfers to fail.
-
-I recommend using the OFFSET directly in I<get()>, I<put()>, and I<append()>
-instead of using this method.  It was only added to make I<Net::FTPSSL>
-compatible with I<Net::FTP>.  A non-zero offset in those methods will override
-what you provide here.  If you call any of the other I<get()>/I<put()> variants
-after calling this function, you will get an error.
-
-It is OK to use an I<OFFSET> of B<-1> here to have I<Net::FTPSSL> calculate
-the correct I<OFFSET> for you before it get's used.  Just like if you had
-provided it directly to the I<get()>, I<put()>, and I<append()> calls.
-
-This I<OFFSET> will be automatically zeroed out the 1st time it is used.
-
 =item quot( CMD [,ARGS] )
 
 Send a command, that I<Net::FTPSSL> does not directly support, to the remote
@@ -3032,6 +3052,25 @@ FTPS server.  The status is the first digit from the full 3 digit response code.
 
 The possible values are exposed via the following B<7> constants:
 CMD_INFO, CMD_OK, CMD_MORE, CMD_REJECT, CMD_ERROR, CMD_PROTECT and CMD_PENDING.
+
+=item restart( OFFSET )
+
+Set the byte offset at which to begin the next data transfer.  I<Net::FTPSSL>
+simply records this value and uses it during the next data transfer.  For
+this reason this method will never return an error, but setting it may cause
+subsequent data transfers to fail.
+
+I recommend using the OFFSET directly in I<get()>, I<put()>, and I<append()>
+instead of using this method.  It was only added to make I<Net::FTPSSL>
+compatible with I<Net::FTP>.  A non-zero offset in those methods will override
+what you provide here.  If you call any of the other I<get()>/I<put()> variants
+after calling this function, you will get an error.
+
+It is OK to use an I<OFFSET> of B<-1> here to have I<Net::FTPSSL> calculate
+the correct I<OFFSET> for you before it get's used.  Just like if you had
+provided it directly to the I<get()>, I<put()>, and I<append()> calls.
+
+This I<OFFSET> will be automatically zeroed out the 1st time it is used.
 
 =item set_callback( [cb_func_ref, end_cb_func_ref [, cb_data_ref]] )
 
@@ -3135,7 +3174,7 @@ collection of modules (libnet).
 
 Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
 and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
-L<http://search.cpan.org/~cleach/Net-FTPSSL-0.21/FTPSSL.pm>.
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.22/FTPSSL.pm>.
 
 Patches are appreciated when a log file and sample code are also provided.
 

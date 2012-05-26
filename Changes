@@ -2,6 +2,18 @@ Revision history for Perl extension Net::FTPSSL.
 
 Version - YYYY/MM/DD
 --------------------
+0.22 2012/05/21 08:30:00
+  - Bug # 77072 requested to autodetect the need for using the PRET command.
+    The old test in t/10-complex.t was different & doesn't interfere.  The docs
+    in the POD now mark the Pret option as optional for cases where auto-detect
+    doesn't work!
+  - Fixed issue with ccc that the server sometimes responds to a successful NOOP
+    twice, resulting in command/resonses getting out of sync.  (Another hack)
+  - Fixed quot() bug introduced with Bug # 74025 uc() fix in the last release.
+    Accidently shifted off the arguments a 2nd time during the uc() call.
+  - Fixed the return code in restart() to always be 1 instead of undef, since
+    it never fails.  Also moved its description towards the end of the POD text.
+
 0.21 2012/02/15 08:30:00
   - Fixed bad call to _croak_or_return () in _get_data_channel() when dealing
     with failed certificates for data connections.
