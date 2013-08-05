@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : cleach <cleach at cpan dot org>
 # Created : 01 March 2005
-# Version : 0.22
+# Version : 0.23
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -24,7 +24,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.22";
+$VERSION = "0.23";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -79,18 +79,26 @@ sub new {
   my $host         = shift;
   my $arg          = (ref ($_[0]) eq "HASH") ? $_[0] : {@_};
 
+  # The hash to pass to start_ssl() ...
+  my %ssl_args;
+
   # The main purpose of this option is to allow users to specify
   # client certificates when their FTPS server requires them.
   # This hash applies to both the command & data channels.
   # Tags specified here overrided normal options if any tags
   # conflict.  Any other use of this option is unsupported.
   # See IO::Socket::SSL for supported options.
-  my %ssl_args;
   if (ref ($arg->{SSL_Client_Certificate}) eq "HASH") {
      %ssl_args = %{$arg->{SSL_Client_Certificate}}
   } elsif (ref ($arg->{SSL_Advanced}) eq "HASH") {
      %ssl_args = %{$arg->{SSL_Advanced}};       # Depreciated in v0.18
      print STDERR "SSL_Advanced has been depreciated, use SSL_Client_Certificate instead!\n";
+  } else {
+     # Stops the Man-In-The-Middle (MITM) security warning from start_ssl()
+     # when it calls configure_SSL() in IO::Socket::SSL.
+     # To plug that MITM security hole requires the use of certificates,
+     # all that's being done here is supressing the warning.
+     $ssl_args{SSL_verify_mode} = Net::SSLeay::VERIFY_NONE();
   }
 
   # Now onto processing the regular hash of arguments provided ...
@@ -172,19 +180,48 @@ sub new {
 
   # We start with a clear connection, because I don't know if the
   # connection will be implicit or explicit or remain clear after all.
-  my %socketArgs = (  PeerAddr => $host,
-                      PeerPort => $port,
-                      Proto    => 'tcp',
-                      Timeout  => $timeout
-                   );
-  $socketArgs{LocalAddr} = $localaddr  if (defined $localaddr);
+  my $socket;
 
-  my $socket = IO::Socket::INET->new ( %socketArgs )
+  if (exists $arg->{ProxyArgs}) {
+     # Establishing a Proxy Connection ...
+     my %proxyArgs = %{$arg->{ProxyArgs}};
+
+     $proxyArgs{'remote-host'} = $host;
+     $proxyArgs{'remote-port'} = $port;
+
+     eval {
+        require Net::HTTPTunnel;    # So not everyone has to install this module ...
+
+        $socket = Net::HTTPTunnel->new ( %proxyArgs );
+     };
+     if ($@) {
+         return _croak_or_return (undef, $die, $dbg_flg, "Missing Perl Module Error:\n" . $@);
+     }
+     unless ( defined $socket ) {
+        my $pmsg = ($proxyArgs{'proxy-host'} || "undef") . ":" . ($proxyArgs{'proxy-port'} || "undef");
+        return _croak_or_return (undef, $die, $dbg_flg,
+                                 "Can't open HTTPTunnel proxy connection! ($pmsg) to ($host:$port)");
+     }
+     ${*$socket}{myProxyArgs} = \%proxyArgs;
+
+  } else {
+     # Establishing a Direct Connection ...
+     my %socketArgs = (  PeerAddr => $host,
+                         PeerPort => $port,
+                         Proto    => 'tcp',
+                         Timeout  => $timeout
+                      );
+     $socketArgs{LocalAddr} = $localaddr  if (defined $localaddr);
+
+     $socket = IO::Socket::INET->new ( %socketArgs )
                    or
             return _croak_or_return (undef, $die, $dbg_flg,
                                   "Can't open tcp connection! ($host:$port)");
+     ${*$socket}{mySocketOpts} = \%socketArgs;
+  }
 
-  $socket->autoflush(1);
+  _my_autoflush ( $socket );
+
   ${*$socket}{debug} = $debug;
   ${*$socket}{Croak} = $die;
 
@@ -279,7 +316,6 @@ sub new {
   ${*$obj}{FixPutTs}     = ${*$obj}{FixGetTs} = $pres_ts;
   ${*$obj}{OverridePASV} = $pasvHost;
   ${*$obj}{dcsc_mode}    = FTPS_PASV;
-  ${*$obj}{mySocketOpts} = \%socketArgs;
   ${*$obj}{Pret}         = $pret;
   ${*$obj}{EmulateBug}   = $emulate_bug;
 
@@ -292,11 +328,11 @@ sub new {
      # Reuse the command channel context ...
      my %ssl_reuse = ( SSL_reuse_ctx => ${*$obj}{_SSL_ctx} );
      ${*$obj}{myContext}   = \%ssl_reuse;
+  }
 
-     # Print out the details of the SSL object.  It's TRUE only for debugging!
-     if ( $debug ) {
-        $obj->_debug_print_hash ( $host, $port, $encrypt_mode );
-     }
+  # Print out the details of the SSL object.  It's TRUE only for debugging!
+  if ( $debug ) {
+     $obj->_debug_print_hash ( $host, $port, $encrypt_mode );
   }
 
   return $obj;
@@ -318,6 +354,8 @@ sub login {
   delete ( ${*$self}{_mask_value_in_response_} );
 
   if ( $logged_on ) {
+     $self->supported ("HELP");     # So help is always called early instead of later.
+
      if ( ${*$self}{FixPutTs} && ! $self->supported ("MFMT") ) {
         ${*$self}{FixPutTs} = 0;    # Not supported by this server after all!
      }
@@ -334,7 +372,7 @@ sub login {
 sub quit {
   my $self = shift;
   $self->_quit() or return 0;   # Don't do a croak here, since who tests?
-  $self->close();
+  _my_close ($self);            # Old way $self->close();
   $self->_close_LOG ()  if ( ${*$self}{debug} );
   return 1;
 }
@@ -493,12 +531,41 @@ sub _open_data_channel {
   # channel has been sent to the FTPS server and the FTPS server responds
   # to the socket you are creating below!
 
+  my $msg = "";
+  my %proxyArgs;
+  if (exists ${*$self}{myProxyArgs} ) {
+     %proxyArgs = %{${*$self}{myProxyArgs}};
+     $msg = ($proxyArgs{'proxy-host'} || "undef") . ":" . ($proxyArgs{'proxy-port'} || "undef");
+
+     # Update the host & port to connect to through the proxy server ...
+     $proxyArgs{'remote-host'} = $host;
+     $proxyArgs{'remote-port'} = $port;
+  }
+
   my $socket;
+
   if ( ${*$self}{data_prot} eq DATA_PROT_PRIVATE ) {
+     if (exists ${*$self}{myProxyArgs} ) {
+        # Set the proxy paramters for all future data connections ...
+        Net::SSLeay::set_proxy ( $proxyArgs{'proxy-host'}, $proxyArgs{'proxy-port'},
+                                 $proxyArgs{'proxy-user'}, $proxyArgs{'proxy-pass'} );
+        $msg = " (via proxy $msg)";
+     }
+
+# carp "MSG=($msg)\n" . "proxyhost=($Net::SSLeay::proxyhost--$Net::SSLeay::proxyport)\n" . "auth=($Net::SSLeay::proxyauth--$Net::SSLeay::CRLF)\n";
+
      $socket = Net::SSLeay::Handle->make_socket( $host, $port )
                or return $self->_croak_or_return (0,
-                           "Can't open private data connection to $host:$port");
+                      "Can't open private data connection to $host:$port $msg");
 
+# carp "Socket Created!\n";
+
+  } elsif ( ${*$self}{data_prot} eq DATA_PROT_CLEAR && exists ${*$self}{myProxyArgs} ) {
+     $socket = Net::HTTPTunnel->new ( %proxyArgs ) or
+             return $self->_croak_or_return (0,
+                   "Can't open HTTP Proxy data connection tunnel from $msg to $host:$port");
+
+  # } elsif ( ${*$self}{data_prot} eq DATA_PROT_CLEAR && exists ${*$self}{mySocketOpts} ) {
   } elsif ( ${*$self}{data_prot} eq DATA_PROT_CLEAR ) {
      my %socketArgs = %{${*$self}{mySocketOpts}};
      $socketArgs{PeerAddr} = $host;
@@ -544,11 +611,40 @@ sub _get_data_channel {
       return $self->_croak_or_return (0, "Currently doesn't support mode ${*$self}{data_prot} for data channels.");
    }
 
-   $io->autoflush (1);
+   _my_autoflush ( $io );
 
    # $self->_debug_print_hash ("host", "port", ${*$self}{data_prot}, $io);
 
    return ( $io );
+}
+
+# Note: This doesn't reference $self on purpose! (so not a bug!) See Bug Id 82094
+sub _my_autoflush {
+   my $skt = shift;
+
+   if ( $skt->can ('autoflush') ) {
+      $skt->autoflush (1);
+   } else {
+      # So turn it on manually instead ...
+      my $oldFh = select $skt;
+      $| = 1;
+      select $oldFh;
+   }
+
+   return;
+}
+
+# Note: This doesn't reference $self on purpose! (so not a bug!) See Bug Id 82094
+sub _my_close {
+   my $io = shift;
+
+   if ( $io->can ('close') ) {
+      $io->close ();
+   } else {
+      close ($io);
+   }
+
+   return;
 }
 
 sub nlst {
@@ -593,13 +689,13 @@ sub list {
       next if $! == EINTR;
       my $type = $nlst_flg ? 'nlst()' : 'list()';
       $self->_croak_or_return (0, "System read error on read while $type: $!");
-      $io->close();
+      _my_close ($io);    # Old way $io->close();
       return ();
     }
     $dati .= $tmp;
   }
 
-  $io->close();
+  _my_close ($io);    # Old way $io->close();
 
   # To catch the expected "226 Closing data connection."
   if ( $self->response() != CMD_OK ) {
@@ -987,7 +1083,7 @@ sub get {
 
   print STDERR ". done! (" . $self->_fmt_num ($total) . " byte(s))\n"  if (${*$self}{trace});
 
-  $io->close();
+  _my_close ($io);    # Old way $io->close();
 
   # To catch the expected "226 Closing data connection."
   if ( $self->response() != CMD_OK ) {
@@ -1136,8 +1232,8 @@ sub xput {              # A variant of the regular put (STOR command)
    }
 
    # Now lets send the file.  Make sure we can't die during this process ...
-   my $die = ${*self}{Croak};
-   ${*self}{Croak} = 0;
+   my $die = ${*$self}{Croak};
+   ${*$self}{Croak} = 0;
 
    my ($resp, $msg1, $msg2, $requested_file_name, $tm) =
                               $self->_common_put ($file_loc, $scratch_name);
@@ -1168,7 +1264,7 @@ sub xput {              # A variant of the regular put (STOR command)
    }
 
    # Now allow us to die again if we must ...
-   ${*self}{Croak} = $die;
+   ${*$self}{Croak} = $die;
 
    return ( $self->_test_croak ( $resp ) );
 }
@@ -1423,7 +1519,7 @@ sub _common_put {
      }
   }
 
-  $io->close();
+  _my_close ($io);    # Old way $io->close();
 
   # To catch the expected "226 Closing data connection."
   if ( $self->response() != CMD_OK ) {
@@ -2212,7 +2308,7 @@ sub command {
     ${*$self}{_command_failed_} = "ERROR";
     my $err_msg = "Can't write command on socket: $!";
     carp "$err_msg";                    # This prints a warning.
-    $self->close;
+    _my_close ($self);                  # Old way $self->close();
     # Not called as an object member in case $self not a FTPSSL obj.
     _croak_or_return ($self, 0, $err_msg);
     return $self;  # Included here due to non-standard _croak_or_return() usage.
@@ -2302,8 +2398,8 @@ sub response {
 
        if (${*$self}{debug}) {
           # Do we need to hide a value in the logged response ???
-          if ( exists ( ${*$self}{_hide_value_in_response_} ) ) {
-            my $val = ${*$self}{_hide_value_in_response_};
+          if ( exists ${*$self}{_hide_value_in_response_} ) {
+            my $val = _mask_regex_chars ($self, ${*$self}{_hide_value_in_response_});
             my $mask = ${*$self}{_mask_value_in_response_} || "????";
             $line =~ s/$val/<$mask>/g;
           }
@@ -2334,13 +2430,28 @@ sub response {
      }
   }
 
-  # Returns the 1st digit of the 3 digit code!
+  # Returns the 1st digit of the 3 digit status code!
   return substr( ${*$self}{last_ftp_msg}, 0, 1 );
 }
 
 sub last_message {
    my $self = shift;
    return ${*$self}{last_ftp_msg};
+}
+
+#-----------------------------------------------------------------------
+# Not in POD on purpose.  It's an internal work arround for a debug issue.
+#    Replace all chars known to cause issues with RegExp by putting
+#    a "\" in front of it to remove the chars special meaning.
+#    (less messy than putting it into square brackets ...)
+#-----------------------------------------------------------------------
+sub _mask_regex_chars {
+   my $self = shift;
+   my $mask = shift;
+
+   $mask =~ s/([([?+*\\^$).])/\\$1/g;
+
+   return ($mask);
 }
 
 #-----------------------------------------------------------------------
@@ -2548,7 +2659,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.22
+=head1 VERSION 0.23
 
 =head1 SYNOPSIS
 
@@ -2616,6 +2727,12 @@ B<useSSL> - Use this option to connect to the server using SSL instead of TLS.
 TLS is the default encryption type and the more secure of the two protocols.
 Set B<useSSL =E<gt> 1> to use SSL.
 
+B<ProxyArgs> - A hash reference to pass to the proxy server.  When a proxy
+server is encountered, this class uses I<Net::HTTPTunnel> to get through to
+the server you need to talk to.  See I<Net::HTTPTunnel> for what values are
+supported.  Options I<remote-host> and I<remote-port> are hard coded to the
+same values as provided by I<HOST> and I<PORT> above and can not be overriden.
+
 B<PreserveTimestamp> - During all I<puts> and I<gets>, attempt to preserve the
 file's timestamp.  By default it will not preserve the timestamps.
 
@@ -2646,10 +2763,13 @@ B<SSL_Client_Certificate> - Expects a reference to a hash.  It's main purpose
 is to allow you to use client certificates when talking to your I<FTPS> server.
 Options here apply to the creation of the command channel.  And when a data
 channel is needed later, it uses the B<SSL_reuse_ctx> option to reuse the
-command channel's context.  See I<start_SSL()> in I<IO::Socket::SSL> for more
-details on this and other options available.  If an option provided here
-conflicts with other options we would normally use, the entries in this hash
-take precedence.
+command channel's context.
+
+See I<start_SSL()> in I<IO::Socket::SSL> for more details on this and other
+options available besides those for certificates.  If an option provided via
+this hash conflicts with other options we would normally use, the entries in
+this hash take precedence.  If all you want to do is have the data channel use
+B<SSL_reuse_ctx>, just provide an empty hash.
 
 B<Buffer> - This is the block size that I<Net::FTPSSL> will use when a transfer
 is made. Default value is 10240.
@@ -3030,9 +3150,10 @@ method will always return B<FALSE> unless you set the I<OverrideHELP> option in
 the constructor.
 
 This method is used internally for conditional logic only when checking if the
-following 4 I<FTP> commands are allowed: B<ALLO>, B<NOOP>, B<MFMT>, and B<MDTM>.
-The B<ALLO> command is used with all I<put>/I<get> command sequences.  The other
-three are not checked that often.
+following 5 I<FTP> commands are allowed: B<ALLO>, B<NOOP>, B<HELP>, B<MFMT> and
+B<MDTM>.  The B<ALLO> command is used with all I<put>/I<get> command sequences.
+The other four are not checked that often.  Function I<xput> also tests for four
+more commands indirectly: B<STOR>, B<DELE>, B<RNFR> and B<RNTO>.
 
 =item last_message() or message()
 
@@ -3174,13 +3295,13 @@ collection of modules (libnet).
 
 Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
 and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
-L<http://search.cpan.org/~cleach/Net-FTPSSL-0.22/FTPSSL.pm>.
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.23/FTPSSL.pm>.
 
 Patches are appreciated when a log file and sample code are also provided.
 
 =head1 COPYRIGHT
 
-Copyright (c) 2009 - 2012 Curtis Leach. All rights reserved.
+Copyright (c) 2009 - 2013 Curtis Leach. All rights reserved.
 
 Copyright (c) 2005 Marco Dalla Stella. All rights reserved.
 

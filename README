@@ -1,4 +1,4 @@
-Net-FTPSSL version 0.22
+Net-FTPSSL version 0.23
 =======================
 
 Net::FTPSSL is an object oriented Perl module which implements a simple
@@ -108,11 +108,46 @@ This module requires these other modules and libraries:
  Sys::Hostname
  File::Copy
 
+If you are going to have to tunnel through a proxy server, the following module
+is also required:
+
+ Net::HTTPTunnel
+
+
+SMOKE TESTER ENVIRONMENT VARIABLES
+
+The test scripts honor the smoke tester's special environment variable
+for setting useful defaults where you have no server to test against.
+
+export PERL_MM_USE_DEFAULT=1
+
+You can get the same results by doing
+     make test < /dev/null
+
+
+SPECIAL ENVIRONMENT VARIABLES FOR RUNNING THE TEST SCRIPTS
+
+Running these tests over and over again and answering all the prompts gets old
+real quick.  So many prompts in the test scripts allow you to define custom
+defaults via environment variables.  These variables are:
+
+export FTPSSL_SERVER=<your server>
+export FTPSSL_USER=<your user name>
+export FTPSSL_PWD=<your password>
+export FTPSSL_DIR=<defaut dir on server>
+
+These variables are used if Net::HTTPTunnel is present
+export FTPSSL_PROXY_HOST=<your proxy server>
+export FTPSSL_PROXY_PORT=<your proxy port>
+export FTPSSL_PROXY_USER_PWD_REQUIRED=<Y|N>
+export FTPSSL_PROXY_USER=<your user name on the proxy server>
+export FTPSSL_PROXY_PWD=<your password on the proxy server>
+
 
 COPYRIGHT AND LICENCE
 
 Copyright (C) 2005 by Marco Dalla Stella
-Copyright (C) 2009 - 2012 by Curtis Leach
+Copyright (C) 2009 - 2013 by Curtis Leach
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.6 or,

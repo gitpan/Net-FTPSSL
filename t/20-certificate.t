@@ -56,6 +56,8 @@ diag( "has permissions to read and write." );
 diag ( "See the README file for instructions on how to fully" );
 diag ( "enable this test!" );
 
+my $p_flag = proxy_supported ();
+
 my $more_test = ask_yesno("Do you want to do a certificate test");
 
 SKIP: {
@@ -94,6 +96,10 @@ SKIP: {
 
     $psv_mode = ask("\tUse (P)ASV or (E)PSV for data connections", "P", "(P|E)");
 
+    my $proxy;
+    $proxy = ask_proxy_questions ()  if ($p_flag);
+
+
     # The main certificate log file ...
     my $log_file = "./t/test_certificate.txt";
 
@@ -119,6 +125,11 @@ SKIP: {
                       SSL_Client_Certificate => \%certificate_hash,
                       Croak => 1,
                       Timeout => 121, Debug => 1, Trace => 1 );
+
+    # Set if we are going through a proxy server ...
+    if (defined $proxy) {
+       $ftps_opts{ProxyArgs} = $proxy;
+    }
 
     print STDERR "\n**** Starting the Certificate server test ****\n";
 
@@ -301,6 +312,39 @@ sub prompt {
    return ( $ans );
 }
 
+# Check if using a proxy server is supported ...
+sub proxy_supported {
+   eval {
+      require Net::HTTPTunnel;
+   };
+   if ($@) {
+      diag ("NOTE: Using a proxy server is not supported without first installing Net::HTTPTunnel\n");
+      return 0;
+   }
+
+   return 1;
+}
+
+# Ask the proxy server related questions ...
+sub ask_proxy_questions {
+   my $ans = ask_yesno ("Will you be FTP'ing through a proxy server?");
+   unless ($ans) {
+      return undef;
+   }
+
+   my %proxy_args;
+   $proxy_args{'proxy-host'} = ask2 ("\tEnter your proxy server name", undef, undef, $ENV{FTPSSL_PROXY_HOST});
+   $proxy_args{'proxy-port'} = ask2 ("\tEnter your proxy port", undef, undef, $ENV{FTPSSL_PROXY_PORT});
+   $ans = ask2 ("\tEnter your proxy user name (or space if not required)", undef, undef, $ENV{FTPSSL_PROXY_USER});
+   if ($ans ne "") {
+      $proxy_args{'proxy-user'} = $ans;
+      $proxy_args{'proxy-pass'} = ask2 ("\tEnter your proxy password", undef, undef, $ENV{FTPSSL_PROXY_PWD});
+   }
+
+   # diag ("Host: ", $proxy_args{'proxy-host'}, "   Port: ", $proxy_args{'proxy-port'}, "  User: ", ($proxy_args{'proxy-user'} || "undef"), "  Pwd: ", ($proxy_args{'proxy-pwd'} || "undef"));
+
+   return \%proxy_args;
+}
 
 # vim:ft=perl:
 

@@ -2,13 +2,37 @@ Revision history for Perl extension Net::FTPSSL.
 
 Version - YYYY/MM/DD
 --------------------
+0.23 2013/08/01 08:30:00
+  - Added clarification to use of SSL_Client_Certificate option in pod text.
+  - Added Bug Id 82094 to support tunneling through a proxy server via the
+    ProxyArgs option.  Supports both proxy servers that require a password as
+    well as those that don't.  This option requires Net::HTTPTunnel to use.
+    But this new module isn't required if you don't use tunneling.
+    (perl Makefile.PL will ask.)
+  - Added optional proxy server questions if Net::HTTPTunnel is installed for
+    the test scripts (t/*.t).  It warns you if it's missing during the test.
+  - Fixed bug in login() so the call to help() only happens if the login is
+    successfull.
+  - Bug Id 84376 uncoverd bug in IO-Socket-SSL versions 1.79 to 1.85 when
+    using Certificats for the Data Channel & getting a Man-In-The-Middle (MITM)
+    warning that didn't apply.  So skip those releases.
+  - Bug Id 85420 same MITM warning as the other bug, but this time without using
+    Certificates in the command channel.  This required a code change in new()
+    to fix.
+  - Fixed masking issue when writing to the log file when the value that needed
+    to be masked contained regex special chars.
+  - Added clarification that any warnings printed below the 10-complex.t tests
+    are just that.  Warnings, not errors preventing things from working.  They
+    are collected so the developer can be notified about them for fixing in
+    furture releases.
+
 0.22 2012/05/21 08:30:00
   - Bug # 77072 requested to autodetect the need for using the PRET command.
     The old test in t/10-complex.t was different & doesn't interfere.  The docs
     in the POD now mark the Pret option as optional for cases where auto-detect
     doesn't work!
   - Fixed issue with ccc that the server sometimes responds to a successful NOOP
-    twice, resulting in command/resonses getting out of sync.  (Another hack)
+    twice, resulting in command/responses getting out of sync.  (Another hack)
   - Fixed quot() bug introduced with Bug # 74025 uc() fix in the last release.
     Accidently shifted off the arguments a 2nd time during the uc() call.
   - Fixed the return code in restart() to always be 1 instead of undef, since
