@@ -2,6 +2,26 @@ Revision history for Perl extension Net::FTPSSL.
 
 Version - YYYY/MM/DD
 --------------------
+0.24 2014/06/30 08:30:00
+  - Makefile.PL fix, only asks question if Net::HTTPTunel isn't present!
+    Also now defaults to "N" instead of "Y" if module not present.
+  - Fixed bug in supported().  Unsupported commands are followed with "*"
+    in help.  Most do "CMD*", but found some servers doing "CMD *" instead.
+  - Fixed bug in 20-certificate.t where we were getting a false failure
+    on nlst().  Fixed to explicitly check the response code instead of
+    assuming an error when nothing was found.  Fixed list() as well.
+  - Same fix in 10-complex.t, even though tests designed to always return
+    something.
+  - Added transfer() to transfer files from one system to another system
+    without the need to make a local copy of the file.
+  - Added xtransfer() as well.
+  - Added transfer & xtransfer validation to 10-complex.t to test things out.
+  - Added a new environment variable default for *.t prompts.
+  - Bug # 95411 - Patch provided by ian@iansramblings.com.  Fixes hang issue
+    when the command channel unexpectedly drops.  Does this by implementing
+    a timeout in response().
+    #-----------  (Should I do this for data channel sysreads as well?)
+
 0.23 2013/08/01 08:30:00
   - Added clarification to use of SSL_Client_Certificate option in pod text.
   - Added Bug Id 82094 to support tunneling through a proxy server via the
@@ -24,7 +44,7 @@ Version - YYYY/MM/DD
   - Added clarification that any warnings printed below the 10-complex.t tests
     are just that.  Warnings, not errors preventing things from working.  They
     are collected so the developer can be notified about them for fixing in
-    furture releases.
+    furture releases.  They are also written to the end of the log now as well.
 
 0.22 2012/05/21 08:30:00
   - Bug # 77072 requested to autodetect the need for using the PRET command.

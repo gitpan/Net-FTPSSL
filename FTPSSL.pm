@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : cleach <cleach at cpan dot org>
 # Created : 01 March 2005
-# Version : 0.23
+# Version : 0.24
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -24,7 +24,7 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.23";
+$VERSION = "0.24";
 @EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
                DATA_PROT_CLEAR  DATA_PROT_PRIVATE
                DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
@@ -97,7 +97,7 @@ sub new {
      # Stops the Man-In-The-Middle (MITM) security warning from start_ssl()
      # when it calls configure_SSL() in IO::Socket::SSL.
      # To plug that MITM security hole requires the use of certificates,
-     # all that's being done here is supressing the warning.
+     # so all that's being done here is supressing the warning.
      $ssl_args{SSL_verify_mode} = Net::SSLeay::VERIFY_NONE();
   }
 
@@ -224,6 +224,7 @@ sub new {
 
   ${*$socket}{debug} = $debug;
   ${*$socket}{Croak} = $die;
+  ${*$socket}{Timeout} = $timeout;
 
   my $obj;
 
@@ -318,6 +319,7 @@ sub new {
   ${*$obj}{dcsc_mode}    = FTPS_PASV;
   ${*$obj}{Pret}         = $pret;
   ${*$obj}{EmulateBug}   = $emulate_bug;
+  ${*$obj}{Timeout}      = $timeout;
 
   ${*$obj}{ftpssl_filehandle} = $FTPS_ERROR  if ( $debug == 2 );
   $FTPS_ERROR = undef;
@@ -1172,7 +1174,8 @@ sub _get_scratch_file {
    # And get default body to use if none was supplied or it's ""!
    my $c = (caller(1))[3];
    my $os;
-   if ( defined $c && $c eq "Net::FTPSSL::xput" ) {
+   if ( defined $c &&
+       ( $c eq "Net::FTPSSL::xput" || $c eq "Net::FTPSSL::xtransfer" ) ) {
       $os = fileparse_set_fstype ("FTP");    # Follow Unix instead of OS rules.
       # Client Name + process PID ... Unique on remote server ...
       $body = $body || (hostname () . ".$$");
@@ -1303,6 +1306,262 @@ sub xget {              # A variant of the regular get (RETR command)
       move ( $scratch_name, $file_loc ) or
            return $self->_croak_or_return (0, "Can't rename the local scratch file!");
    }
+
+   return ( $self->_test_croak ( $resp ) );
+}
+
+# Doesn't do the CF/LF transformation.
+# It lets the source & dest servers do it if it's necessary!
+# Please note that $self & $dest_ftp will write to different log files!
+sub transfer {
+   my $self        = shift;
+   my $dest_ftp    = shift;        # A Net::FTPSSL object.
+   my $remote_file = shift || "";
+   my $dest_file   = shift || $remote_file;
+   my $offset      = shift || ${*$self}{net_ftpssl_rest_offset} || 0;
+
+   # Verify we are dealing with a Net::FTPSSL object ...
+   if ( ref($dest_ftp) eq "" || ref($dest_ftp) ne "Net::FTPSSL" ) {
+      return $self->_croak_or_return(0, "The destination server must be a valid Net::FTPSSL object! (" . ref($dest_ftp) . ")");
+   }
+
+   # Clear out this messy restart() cluge for next time ...
+   delete ( ${*$self}{net_ftpssl_rest_offset} );
+
+   # Don't care if this value was set or not.  Just remove it!
+   # We just use any offset from ${*$self} instead ...
+   delete ( ${*$dest_ftp}{net_ftpssl_rest_offset} );
+
+   my ($stmp, $dtmp) = (${*$self}{Croak} || 0, ${*$dest_ftp}{Croak} || 0);
+   if ( $stmp != $dtmp ) {
+      my $msg = "Both connections must use the same Croak Settings for the transfer!";
+      $msg .= "  (${stmp} vs ${dtmp})";
+      $dest_ftp->_print_DBG ("<<+ 555 $msg\n");
+      return $self->_croak_or_return (0, $msg);
+   }
+
+   ($stmp, $dtmp) = (${*$self}{type}, ${*$dest_ftp}{type});
+   if ( $stmp ne $dtmp ) {
+      my $msg = "Both connections must use ASCII or BIN for the transfer!";
+      $msg .= "  (${stmp} vs ${dtmp})";
+      $dest_ftp->_print_DBG ("<<+ 555 $msg\n");
+      return $self->_croak_or_return(0, $msg);
+   }
+
+   my $size = ${*$self}{buf_size} || 2048;
+
+   # Validate the remaining arguments ...
+   if ( ref($remote_file) || $remote_file eq "" ) {
+      return $self->_croak_or_return(0, "The remote file must be a file name!");
+   }
+   if ( ref($dest_file) || $dest_file eq "" ) {
+      return $self->_croak_or_return(0, "The destination file must be a file name!");
+   }
+   if ( $offset < -1 ) {
+      return $self->_croak_or_return(0, "Invalid file offset ($offset)!");
+   }
+
+   # "(caller(1))[3]" returns undef if not called by another Net::FTPSSL method!
+   my $c = (caller(1))[3];
+   my $cb_idx = ( defined $c && $c eq "Net::FTPSSL::xtransfer" ) ? 2 : 1;
+   my $func = ( $cb_idx == 1 ) ? "transfer" : "xtransfer";
+   my $func2 = ( $cb_idx == 1 ) ? "Transfer" : "xTransfer";
+
+   $self->_print_DBG ( "+++ Starting $func2 Between Servers +++\n");
+   $dest_ftp->_print_DBG ( "--- Starting $func2 Between Servers ---\n");
+
+   # Calculate the file offset to send to the FTPS source server via REST ...
+   if ($offset == -1) {
+      $offset = $dest_ftp->size ($dest_file);
+      return (undef)  unless (defined $offset);
+   }
+
+   # -------------------------------------------------
+   # Set up the transfer destination server ... (put)
+   # -------------------------------------------------
+   return (undef)  unless ( $dest_ftp->prep_data_channel ("STOR", $dest_file) );
+   my $restart  = ($offset) ? $dest_ftp->_rest ($offset) : 1;
+   my $response = $dest_ftp->_stor ($dest_file);
+   unless ($restart && $response) {
+      $dest_ftp->_rest (0)  if ($restart && $offset);
+      return ($dest_ftp->_croak_or_return (), undef, undef, $dest_file, undef);
+   }
+   # my $put_msg = $dest_ftp->last_message ();
+   my $dio = $dest_ftp->_get_data_channel ();
+   return (undef)  unless (defined $dio);
+
+   # -------------------------------------------------
+   # Set up the transfer source server ... (get)
+   # -------------------------------------------------
+   unless ( $self->prep_data_channel( "RETR", $remote_file ) ) {
+      _my_close ($dio);
+      $dest_ftp->response ();
+      return (undef);     # Already decided not to call croak if you get here!
+   }
+   my $rest = ($offset) ? $self->_rest ($offset) : 1;
+   unless ( $rest && $self->_retr ($remote_file) ) {
+      if ( $offset && $rest ) {
+         my $msg = $self->last_message ();
+         $self->_rest (0);                  # Must clear out on failure!
+         ${*$self}{last_ftp_msg} = $msg;    # Restore original error message!
+      }
+      _my_close ($dio);
+      $dest_ftp->response ();
+      return ($self->_croak_or_return ());
+   }
+
+   my $sio = $self->_get_data_channel ();
+   unless (defined $sio) {
+      _my_close ($dio);
+      $dest_ftp->response ();
+      return (undef)
+   }
+
+   print STDERR "$func() trace ."  if (${*$self}{trace});
+
+   my ($cnt, $total, $len) = (0, 0, 0);
+   my $data;
+   my $written;
+
+   # So simple without CR/LF transformations ...
+   while ( $len = sysread ($sio, $data, $size) ) {
+      unless ( defined $len ) {
+         next  if ( $! == EINTR );
+         _my_close ($dio);
+         $dest_ftp->response ();
+         return $self->_croak_or_return (0, "System read error on $func(): $!");
+      }
+
+      print STDERR "."  if (${*$self}{trace} && ($cnt % TRACE_MOD) == 0);
+      ++$cnt;
+
+      $total = $self->_call_callback ($cb_idx, \$data, \$len, $total);
+
+      # Write to the destination server ...
+      if ($len > 0) {
+         $written = syswrite ($dio, $data, $len);
+         unless (defined $written) {
+            _my_close ($sio);
+            $self->response ();
+            return ($dest_ftp->_croak_or_return (0, "System write error on $func(): $!"));
+         }
+      }
+   }   # End while reading from the source server ...
+
+
+   # Process trailing "callback" info if returned.
+   my $trail;
+   ($trail, $len, $total) = $self->_end_callback ($cb_idx, $total);
+
+   # Write to the destination server ...
+   if ($trail && $len > 0) {
+      $written = syswrite ($dio, $trail, $len);
+      unless (defined $written) {
+         _my_close ($sio);
+         $self->response ();
+         return ($dest_ftp->_croak_or_return (0, "System write error on $func(): $!"));
+      }
+   }
+
+   print STDERR ". done!", $self->_fmt_num ($total) . " byte(s)\n"  if (${*$self}{trace});
+
+   # Lets finish off both connections ...
+   _my_close ($sio);
+   _my_close ($dio);
+   my $resp1 = $self->response ();
+   my $resp2 = $dest_ftp->response ();
+
+   if ($resp1 != CMD_OK || $resp2 != CMD_OK) {
+      return ($self->_croak_or_return ());
+   }
+
+   # Preserve the timestamp on the transfered file ...
+   if ($cb_idx == 1 && ${*self}{FixGetTs} && ${*dest_ftp}{FixPutTs}) {
+      my $tm = $self->_mdtm ($remote_file);
+      $dest_ftp->_mfmt ($tm, $dest_file);
+   }
+
+   $self->_print_DBG ( "+++ $func2 Between Servers Completed +++\n");
+   $dest_ftp->_print_DBG ( "--- $func2 Between Servers Completed ---\n");
+
+   return (1);
+}
+
+sub xtransfer {
+   my $self        = shift;
+   my $dest_ftp    = shift;        # A Net::FTPSSL object.
+   my $remote_file = shift || "";
+   my $dest_file   = shift || $remote_file;
+
+   # See _get_scratch_file() for default valuies if undef!
+   my ($prefix, $postfix, $body) = (shift, shift, shift);
+
+   if ( ref($dest_ftp) eq "" || ref($dest_ftp) ne "Net::FTPSSL" ) {
+      return $self->_croak_or_return(0, "The destination server must be a valid Net::FTPSSL object! (" . ref($dest_ftp) . ")");
+   }
+
+   if (defined ${*$self}{net_ftpssl_rest_offset}) {
+      return $self->_croak_or_return (0, "Can't call restart() before xtransfer()!");
+   }
+   if (defined ${*$dest_ftp}{net_ftpssl_rest_offset}) {
+      return $dest_ftp->_croak_or_return (0, "Can't call restart() before xtransfer()!");
+   }
+
+   if ( ref($dest_file) && ref ($dest_file) eq "GLOB" ) {
+      return $self->_croak_or_return (0, "xtransfer doesn't support DEST_FILE being an open file handle.");
+   }
+
+   # Check if allowed on the destination server ...
+   my $help = $dest_ftp->_help();
+   unless ( $help->{STOR} && $help->{DELE} && $help->{RNFR} && $help->{RNTO} ) {
+      return $dest_ftp->_croak_or_return (0, "Function xtransfer is not supported by the destination server.");
+   }
+
+   my $scratch_name = $self->_get_scratch_file ( $prefix, $body, $postfix,
+                                                 $dest_file );
+   return undef  unless ($scratch_name);
+
+   # Save the current die settings for both servers ...
+   my ($sdie, $ddie) = (${*$self}{Croak} || 0, ${*$dest_ftp}{Croak} || 0);
+   if ( $sdie != $ddie ) {
+      return $self->_croak_or_return (0, "xtransfer requires the Croak setting to be the same on both servers (${sdie} vs ${ddie})");
+   }
+
+   # Disable calling "die" on errors ... (save the current Croak setting again)
+   ($sdie, $ddie) = (${*$self}{Croak}, ${*$dest_ftp}{Croak});
+   (${*$self}{Croak}, ${*$dest_ftp}{Croak}) = (0, 0);
+
+   # Now lets send the file, we can no longer die during this process ...
+   my $resp = $self->transfer ($dest_ftp, $remote_file, $scratch_name, undef);
+
+   if ( $resp ) {
+      # Delete any file sitting on the server with the final name we want to use
+      # to avoid file permission issues.  Usually the file won't exist so the
+      # delete will fail ...
+      $dest_ftp->delete ( $dest_file );
+
+      # Now lets make it visible to the file recognizer ...
+      $resp = $dest_ftp->rename ( $scratch_name, $dest_file );
+
+      # Now lets update the timestamp for the file on the dest server ...
+      # It's not an error if the file recognizer grabs it before the
+      # timestamp is reset ...
+      if ($resp && ${*self}{FixGetTs} && ${*dest_ftp}{FixPutTs}) {
+         my $tm = $self->_mdtm ($remote_file);
+         $dest_ftp->_mfmt ($tm, $dest_file);
+      }
+   }
+
+   # Delete the scratch file on error, but don't return this as the error msg.
+   # We want the actual error encounterd from the put or rename commands!
+   unless ($resp) {
+      my $msg1 = ${*$dest_ftp}{last_ftp_msg};
+      $dest_ftp->delete ( $scratch_name );
+      ${*$dest_ftp}{last_ftp_msg} = $msg1;
+   }
+
+   # Now allow us to die again if we must ...
+   (${*$self}{Croak}, ${*$dest_ftp}{Croak}) = ($sdie, $ddie);
 
    return ( $self->_test_croak ( $resp ) );
 }
@@ -1967,6 +2226,7 @@ sub size {
 
 #-----------------------------------------------------------------------
 #  Checks what commands are available on the remote server
+#  If a "*" follows a command, it's unimplemented!
 #-----------------------------------------------------------------------
 
 sub _help {
@@ -2024,6 +2284,9 @@ sub _help {
          # Skip over the start/end part of the response ...
          # Doesn't work for all servers!
          # next  if ( defined $lead && $lead =~ m/^\d+[\s-]?$/ );
+
+         # Make sure no space between the command & the * that marks it unsupported!
+         $line =~ s/(\S)\s+[*]($|\s|,)/$1*$2/g;
 
          my @lst = split (/[\s,.]+/, $line);  # Break into individual commands
 
@@ -2102,6 +2365,8 @@ sub _help {
 
 #-----------------------------------------------------------------------
 # Returns the list of features supported by this server ...
+# Assume one line per command in response ...
+# If the line ends in "*", the command isn't supported by FEAT!
 #-----------------------------------------------------------------------
 
 sub _feat {
@@ -2129,7 +2394,9 @@ sub _feat {
          # Skip over the start/end part of the response ...
          next if ( defined $lead && $lead =~ m/^\d+[\s-]?$/ );
 
-         my @lst = split (/[\s,.]+/, $line);  # Break into individual parts
+         next if ( $line =~ m/[*]$/ );         # Command ends in "*" ???
+
+         my @lst = split (/[\s,.;]+/, $line);  # Break into individual parts
 
          $res{$lst[0]} = 2;    # Only 1st part is the command ...
       }
@@ -2352,14 +2619,22 @@ sub response {
         $data = ${*$self}{next_ftp_msg};
         delete ( ${*$self}{next_ftp_msg} );   # No more left over data!
      } else {
-        # Now lets read the response from the command channel.
-        my $read = sysread( $self, $data, 4096);
-        unless( $read ) {
-          # Not called as an object member in case $self not a FTPSSL obj.
-          _croak_or_return ($self, 0, (defined $read)
+        # Check if there is data pending on the command channel ...
+        my $rin = "";
+        vec ($rin, fileno($self), 1) = 1;
+        if ( select ($rin, undef, undef, ${*$self}{Timeout}) > 0 ) {
+           # Now lets read the response from the command channel.
+           my $read = sysread( $self, $data, 4096);
+           unless( $read ) {
+             # Not called as an object member in case $self not a FTPSSL obj.
+             _croak_or_return ($self, 0, (defined $read)
                                 ? "Can't read command channel socket: $!"
                                 : "Unexpected EOF on command channel socket: $!");
-          return (CMD_ERROR);
+             return (CMD_ERROR);
+           }
+        } else {
+           _croak_or_return ($self, 0, "Timed out waiting for a response!");
+           return (CMD_ERROR);
         }
      }
 
@@ -2379,7 +2654,7 @@ sub response {
 
        if ( $done ) {
           # We read past the end of the current response into the next one ...
-          _print_LOG ( $self, "Attempted to read past end of response! ($line)\n" )  if ( ${*$self}{debug} );
+          _print_LOG ( $self, "Warning: Attempted to read past end of response! (next: $line)\n" )  if ( ${*$self}{debug} );
           ${*$self}{next_ftp_msg} = $line;
           $remember = 1;
           next;
@@ -2659,7 +2934,7 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.23
+=head1 VERSION 0.24
 
 =head1 SYNOPSIS
 
@@ -3026,6 +3301,31 @@ like: S<I<_tmp.tneilctset.51243.tmp>>.
 
 Just be aware that in this case B<LOCAL_FILE> can no longer be a file handle.
 
+=item transfer( dest_server, REMOTE_FILE [, DEST_FILE [, OFFSET]] )
+
+Retrieves the I<REMOTE_FILE> from the current ftps server and uploads it to
+the I<dest_server> as I<DEST_FILE> without making any copy of the file on your
+local file system.  If I<DEST_FILE> isn't provided, it uses I<REMOTE_FILE>
+on the I<dest_server>.
+
+It assumes that you have already successfully logged onto I<dest_server> and
+set both ends to either binary or ascii mode!  So this function skips over
+the CR/LF logic and lets the other servers handle it.  You must also set the
+I<Croak> option to the same value on both ends.
+
+Finally, if logging is turned on, the logs to this function will be split
+between the logs on each system.  So the logs may be a bit of a pain to follow
+since you'd need to look in two places for each half.
+
+=item xtransfer( dest_server, REMOTE_FILE, [DEST_FILE, [PREFIX,
+
+[POSTFIX, [BODY]]]] )
+
+Same as I<transfer>, but it uses a temporary filename on the I<dest_server>
+during the transfer.  And then renames it to I<DEST_FILE> afterwards.
+
+See I<xput> for the meaning of the remaining parameters.
+
 =item delete( REMOTE_FILE )
 
 Deletes the indicated I<REMOTE_FILE>.
@@ -3295,13 +3595,13 @@ collection of modules (libnet).
 
 Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
 and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
-L<http://search.cpan.org/~cleach/Net-FTPSSL-0.23/FTPSSL.pm>.
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.24/FTPSSL.pm>.
 
 Patches are appreciated when a log file and sample code are also provided.
 
 =head1 COPYRIGHT
 
-Copyright (c) 2009 - 2013 Curtis Leach. All rights reserved.
+Copyright (c) 2009 - 2014 Curtis Leach. All rights reserved.
 
 Copyright (c) 2005 Marco Dalla Stella. All rights reserved.
 

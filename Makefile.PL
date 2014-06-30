@@ -3,7 +3,17 @@ use ExtUtils::MakeMaker;
 # See lib/ExtUtils/MakeMaker.pm for details of how to influence
 # the contents of the Makefile that is written.
 
-my $value = prompt ("Will you be tunneling through a proxy server?  This requires extra modules.", "Y");
+
+my $value = "N";
+eval {
+   require Net::HTTPTunnel;
+   $value = "Y";
+};
+if ($@) {
+   # Only ask if module isn't present! (uses default for smoke testers)
+   $value = prompt ("Will you be tunneling through a proxy server?  This requires extra modules.", $value);
+}
+
 
 # My list of required modules for Net::FTPSSL ...
 my %req = ( IO::Socket::SSL => 1.08, IO::Socket::INET => 0.0, Net::SSLeay::Handle => 0.0,
@@ -17,8 +27,8 @@ if ($value eq "Y" || $value eq "y") {
 WriteMakefile(
     NAME              => 'Net::FTPSSL',
     VERSION_FROM      => 'FTPSSL.pm',         # finds $VERSION
-                                              # e.g., Module::Name => 1.1
-    PREREQ_PM         => \%req,
+
+    PREREQ_PM         => \%req,               # e.g., Module::Name => 1.1
 
     ($] >= 5.005 ?     ## Add these new keywords supported since 5.005
       (ABSTRACT_FROM  => 'FTPSSL.pm',         # retrieve abstract from module

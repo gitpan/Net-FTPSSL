@@ -14,12 +14,12 @@ use warnings;
 # Proper values are: debug0, debug1, debug2 & debug3.  3 is the most verbose!
 # use IO::Socket::SSL qw(debug3);
 
-use Test::More tests => 60;   # Also update skipper (one less)
+use Test::More tests => 69;   # Also update skipper (one less)
 use File::Copy;
 
-my $skipper = 59;
+my $skipper = 68;
 
-# plan tests => 59;  # Can't use due to BEGIN block
+# plan tests => 68;  # Can't use due to BEGIN block
 
 BEGIN { use_ok('Net::FTPSSL') }    # Test # 1
 
@@ -39,6 +39,7 @@ $SIG{__WARN__} = sub { my $x = 1; my $c;
 my $debug_log1 = "./t/BABY_1_new.txt";
 my $debug_log2 = "./t/BABY_2_new.txt";
 my $debug_log3 = "./t/BABY_3_new.txt";
+my $debug_log_other = "./t/other_transfer_log.txt";
 
 diag( "" );
 diag( "\nYou can also perform a deeper test." );
@@ -66,8 +67,9 @@ SKIP: {
     $dir = ask2("\tDirectory", "<HOME>", undef, $ENV{FTPSSL_DIR});
     $dir = "" if ($dir eq "<HOME>");   # Will ask server for it later on.
 
+    $mode = uc ($ENV{FTPSSL_MODE} || EXP_CRYPT);
     $mode = ask("\tConnection mode (I)mplicit, (E)xplicit, or (C)lear.",
-                EXP_CRYPT, "(I|E|C)");
+                $mode, "(I|E|C)");
 
     if ( $mode eq CLR_CRYPT ) {
        $data = $encrypt_mode = "";   # Make sure not undef ...
@@ -113,7 +115,7 @@ SKIP: {
     unlink ("./t/test_file_new.tar.gz",
             "./t/FTPSSL.pm_new.tst",
             $log_file, $copy_file,
-            $debug_log1, $debug_log2, $debug_log3);
+            $debug_log1, $debug_log2, $debug_log3, $debug_log_other);
 
     # So we can save the Debug trace in a file from this test.
     # We don't use DebugLogFile for this on purpose so that everything
@@ -159,6 +161,10 @@ SKIP: {
     $ftps_opts{PreserveTimestamp} = 1;
     $ftps_opts{Croak} = 1;
 
+    # For testing the transfer option ...
+    my %other_opts = %ftps_opts;
+    $other_opts{DebugLogFile} = $debug_log_other;
+
     print STDERR "\n**** Starting the real server test ****\n";
     ($trap_warnings, $trap_warnings2) = ("", "");
 
@@ -167,11 +173,17 @@ SKIP: {
 
     isa_ok( $ftp, 'Net::FTPSSL', 'Net::FTPSSL object creation' );
 
+    # This one writes to it's own log file ...
+    my $ftp_other = Net::FTPSSL->new( $server, \%other_opts );
+    isa_ok( $ftp_other, 'Net::FTPSSL', 'Net::FTPSSL "other" object creation' );
+
     ok ( $ftp->login ($user, $pass), "Login to $server" );
+    ok ( $ftp_other->login ($user, $pass), "Login to $server" );
     # is ( $trap_warnings, "", "New & Login produce no warnings (OK to fail this test)" );
 
     # Turning off croak now that our environment is correct!
     $ftp->set_croak (0);
+    $ftp_other->set_croak (0);
 
     if ( $psv_mode ne "P" ) {
        my $t = $ftp->force_epsv (1);
@@ -183,6 +195,9 @@ SKIP: {
          skip ( "EPSV not supported, please rerun test using PASV instead!",
                 $skipper );
        }
+       # Repeat for the other connection.  But no need to test results.
+       $t = $ftp_other->force_epsv (1);
+       $t = $ftp_other->force_epsv (2)  unless ( $t );
     } else {
        ok ( 1, "Using PASV mode for data connections" );
     }
@@ -206,6 +221,8 @@ SKIP: {
     my $pwd = $ftp->pwd();
     ok( defined $pwd, "Getting the directory: ($pwd)" );
     $dir = $pwd  if (defined $pwd);     # Convert relative to absolute path.
+
+    ok( $ftp_other->cwd ($dir), "'Other' Changed the dir to $dir");
 
     my $res = $ftp->cdup ();
     $pwd = $ftp->pwd();
@@ -274,17 +291,17 @@ SKIP: {
     # Query after put() call so there is something to find!
     # (Otherwise it looks like it may have failed.)
     my @lst = $ftp->list ();
-    ok( scalar @lst != 0, 'list() command' );
+    ok( $ftp->last_status_code() == CMD_OK, 'list() command' );
     print_result (\@lst);
 
     $ftp->set_callback (\&callback_func, \&end_callback_func, \%callback_hash);
     @lst = $ftp->list ();
-    ok( scalar @lst != 0, 'list() command with callback' );
+    ok( $ftp->last_status_code() == CMD_OK, 'list() command with callback' );
     print_result (\@lst);
     $ftp->set_callback ();   # Disable callbacks again
 
     @lst = $ftp->list (undef, "*.p?");
-    ok( scalar @lst != 0, 'list() command with wildcards (*.p?)' );
+    ok( $ftp->last_status_code() == CMD_OK, 'list() command with wildcards (*.p?)' );
     print_result (\@lst);
 
     if ( $do_delete ) {
@@ -329,17 +346,17 @@ SKIP: {
     # With call back
     $ftp->set_callback (\&callback_func, \&end_callback_func, \%callback_hash);
     @lst = $ftp->nlst ();
-    ok( scalar @lst != 0, 'nlst() command with callback' );
+    ok ( $ftp->last_status_code() == CMD_OK, 'nlst() command with callback' );
     print_result (\@lst);
     $ftp->set_callback ();   # Disable callbacks again
 
     # Without call back
     @lst = $ftp->nlst ();
-    ok( scalar @lst != 0, 'nlst() command' );
+    ok ( $ftp->last_status_code() == CMD_OK, 'nlst() command' );
     print_result (\@lst);
 
     @lst = $ftp->nlst (undef, "*.p?");
-    ok( scalar @lst != 0, 'nlst() command with wildcards (*.p?)' );
+    ok ( $ftp->last_status_code() == CMD_OK, 'nlst() command with wildcarrds (*.p?)' );
     print_result (\@lst);
 
     # Silently delete it, don't make it part of the test ...
@@ -366,7 +383,6 @@ SKIP: {
 
     ok( $ftp->ascii (), 'putting FTP back in ascii mode' );
     ok( $ftp->xget("FTPSSL.pm", './t/FTPSSL.pm_new.tst'), 'retrieving the ascii file again via xget()' );
-    ok( $ftp->delete("FTPSSL.pm"), "deleting the test file on $server" );
 
     # Now check out the before & after ASCII images
     ok( -s './FTPSSL.pm' == -s './t/FTPSSL.pm_new.tst',
@@ -389,6 +405,26 @@ SKIP: {
     # -----------------------------------------
     # End put/get/rename/delete section ...
     # -----------------------------------------
+
+    # -------------------------------------------------------------------
+    # Testing out the transfer & xtransfer functions between servers ...
+    # -------------------------------------------------------------------
+    ok($ftp->transfer ($ftp_other, "FTPSSL.pm", "FTPSSL.pm.transfer"),
+       "Transfered the file between servers");
+    ok($ftp->xtransfer ($ftp_other, "FTPSSL.pm", "FTPSSL.pm.xtransfer"),
+       "xTransfered the file between servers");
+
+    $size = $ftp_other->size ("FTPSSL.pm.transfer");
+    $original_size = $ftp->size ("FTPSSL.pm");
+    my $xsize = $ftp_other->size ("FTPSSL.pm.xtransfer");
+
+    ok( $size == $original_size, "Transfer Size Check! ($size, $original_size)" );
+    ok( $size == $xsize, "xTransfer Size Check! ($size, $xsize)" );
+
+    # Now clean up after ourselves ...
+    ok( $ftp->delete("FTPSSL.pm"), "deleting the test file on $server" );
+    ok( $ftp_other->delete ("FTPSSL.pm.transfer"), "Deleted the transfter file.");
+    ok( $ftp_other->delete ("FTPSSL.pm.xtransfer"), "Deleted the xtransfter file.");
 
     # -----------------------------------------
     # Clear the command channel, do limited work after this ...

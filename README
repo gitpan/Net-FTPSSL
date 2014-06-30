@@ -1,4 +1,4 @@
-Net-FTPSSL version 0.23
+Net-FTPSSL version 0.24
 =======================
 
 Net::FTPSSL is an object oriented Perl module which implements a simple
@@ -97,6 +97,10 @@ If you are submitting a patch for consideration, please also provide the above
 trace file in case I can't duplicate the issue against the FTPS servers I have
 available to me for testing.
 
+For new functionality, it may help if you could temporarily grant me a login
+that I can test against.  Otherwise I may ask your help in beta testing new
+code.  My servers can't always support all possible configurations or behaviours.
+
 DEPENDENCIES
 
 This module requires these other modules and libraries:
@@ -147,7 +151,7 @@ export FTPSSL_PROXY_PWD=<your password on the proxy server>
 COPYRIGHT AND LICENCE
 
 Copyright (C) 2005 by Marco Dalla Stella
-Copyright (C) 2009 - 2013 by Curtis Leach
+Copyright (C) 2009 - 2014 by Curtis Leach
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.6 or,

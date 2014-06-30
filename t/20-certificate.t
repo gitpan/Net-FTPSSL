@@ -81,8 +81,10 @@ SKIP: {
     $dir = ask2("\tDirectory", "<HOME>", undef, $ENV{FTPSSL_DIR});
     $dir = "" if ($dir eq "<HOME>");   # Will ask server for it later on.
 
+    # Clear connections can't use certificates ...
+    $mode = uc ($ENV{FTPSSL_MODE} || EXP_CRYPT);
     $mode = ask("\tConnection mode (I)mplicit or (E)xplicit.",
-                EXP_CRYPT, "(I|E)");
+                $mode, "(I|E)");
 
     if ( $mode eq CLR_CRYPT ) {
        $data = $encrypt_mode = "";   # Make sure not undef ...
@@ -177,13 +179,16 @@ SKIP: {
 
     ok( $ftp->noop(), "Noop test" );
 
+    # Note: Both list funcs can return nothing if there nothing
+    # to find.  So always check the status code for success!
+    # Also on some servers nlst skips over sub-directories.
     my @lst;
     @lst = $ftp->nlst ();
-    ok( scalar @lst != 0, 'nlst() command' );
+    ok( $ftp->last_status_code() == CMD_OK, 'nlst() command' );
     print_result (\@lst);
 
     @lst = $ftp->list ();
-    ok( scalar @lst != 0, 'list() command' );
+    ok( $ftp->last_status_code() == CMD_OK, 'list() command' );
     print_result (\@lst);
 
     # -----------------------------------------
