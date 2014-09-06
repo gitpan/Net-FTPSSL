@@ -2,6 +2,69 @@ Revision history for Perl extension Net::FTPSSL.
 
 Version - YYYY/MM/DD
 --------------------
+0.25 2014/09/05 08:30:00
+  WARNING: This is a major upgrade & may not be 100% backwards compatible with
+           existing code.  Also the response() redesign may not work for all
+           FTPS servers!  It's a work in progress!  So comments are welcome!
+  - Upgraded the minimum version of IO-Socket-SSL required from v1.08 to v1.26
+    so that I could remove the warnings in the POD for ccc().  But it should
+    still work with the earlier versions if you hack the code.  But don't rely
+    on this in future releases.  (minus the ccc command)
+  - Modified the Synopsis to use Croak since no one was reading my comments
+    about using it too closely anyway.
+  - Added a new pattern for uput() to check for file names with.
+    Also fixed to guarentee it will never return any path info, just the
+    base file name itself.  [ This change may break existing programs. ]
+  - Another hack to recover from a garbled CCC response.  This hack just
+    prevents unnecessary warnings.
+  - Hit a weird FTP server that requiers me to flip flop the binary/ASCII
+    settings on the server/client.  See mixedModeAI() & mixedModeIA().
+  - Added a way to print Perl warnings to the log file. (trapWarn)  It will
+    chain things if warnings were already trapped.  Even between multiple open
+    Net::FTPSSL object logs.  This is only usefull as a debugging tool when
+    reporting on errors via CPAN.  It helps provide context to the warnings
+    that affect this code base.
+  - Added get_log_filehandle() to allow someone to gain access to the open
+    filehandle used to write to the log file generated when Debug is turned on
+    and you specified a log file via DebugLogFile.
+  - Now allows DebugLogFile to be an open file handle (GLOB).
+  - Fixed quot() to echo the command if it's one of those dissallowed.
+    Also now strips off any leading spaces from the command before using it.
+  - Found out use "sub DESTROY" rather than "sub END" for objects. (Just a FYI)
+    Surprise, Surprise!  Sometimes END is called before DESTROY is!
+  - Moved some logic out of quit() into the new DESTROY() method.  No longer
+    need to hack object termination logic via quit().
+  - Added END to handle final clean up for trapWarn().
+  - Fixed warnings in function _feat() caused by strange server returns.
+  - Fixed warnings in function _help() caused by strange server returns.
+  - Fixed 20-certificate.t bug where $ENV{HOME} is not defined for all OS.
+  - Fixed 10-complex.t to use the new warning logic.
+  - Fixed 20-certificate.t to use the new warning logic.
+  - Fixed t/10-complex.t & t/20-certificate.t to use a 30 second Timeout
+    instead of using the default 2 minutes.
+  - Reworked response() with regard to Bug # 97608. (related to Bug # 73115)
+    Had to redesign how this method worked.  It was getting too convoluted
+    to fix any further.  Was the only way to properly fix _help & _feat.
+  - Second issue for Bug # 9706 was an issue with very long login messsages
+    hit an unexpected Timeout issue (last release enhancement).  Turns out the
+    Timeout logic in response() didn't always work properly if you didn't read
+    in the entire response via a single call to sysread().  Had two options,
+    make the buffer huge for the login response or make the logic more complex,
+    to only check for Timeouts on the command channel for new commands.  Turns
+    out select() & sysread() don't actually compare notes.  Hense another reason
+    to redesign how things worked.
+  - This rewrite of response() broke the ccc() hack.  So had to redesign how
+    this hack worked as well.  [May break existing programs using CCC!]
+  - Added special case Debug=>99 for more detailed logging for debugging
+    the new response code base in the future.
+  - Added new environment variable (FTPSSL_DEBUG_LEVEL) to t/10-complex.t to
+    enable low level debugging of the new response() code.  There is no prompt
+    to turn on this feature.  Added more as a reminder that it can be done!
+  - Updated the SSL_Advanced depreciated warning that it will soon be removed
+    in a future release.  It was depreciated in v0.18 way back in 2011, so I
+    feel it's about time to have it removed.  Just giving fair warning here!
+    I'll remove it in v0.26 or v0.27.
+
 0.24 2014/06/30 08:30:00
   - Makefile.PL fix, only asks question if Net::HTTPTunel isn't present!
     Also now defaults to "N" instead of "Y" if module not present.
@@ -20,7 +83,7 @@ Version - YYYY/MM/DD
   - Bug # 95411 - Patch provided by ian@iansramblings.com.  Fixes hang issue
     when the command channel unexpectedly drops.  Does this by implementing
     a timeout in response().
-    #-----------  (Should I do this for data channel sysreads as well?)
+    #-------  (Should I do this for the many data channel sysreads as well?)
 
 0.23 2013/08/01 08:30:00
   - Added clarification to use of SSL_Client_Certificate option in pod text.

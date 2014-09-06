@@ -1,7 +1,7 @@
 # File    : Net::FTPSSL
 # Author  : cleach <cleach at cpan dot org>
 # Created : 01 March 2005
-# Version : 0.24
+# Version : 0.25
 # Revision: $Id: FTPSSL.pm,v 1.24 2005/10/23 14:37:12 kral Exp $
 
 package Net::FTPSSL;
@@ -10,8 +10,9 @@ use strict;
 use warnings;
 
 # Enforce a minimum version of this module or Net::FTPSSL hangs!
-# If you plan on using ccc(), the minimum should be v1.18 instead!
-use IO::Socket::SSL 1.08;
+# v1.08 works, v1.18 added ccc() support.
+# Don't use v1.79 to v1.85 due to misleading warnings.
+use IO::Socket::SSL 1.26;
 
 use vars qw( $VERSION @EXPORT $ERRSTR );
 use base ( 'Exporter', 'IO::Socket::SSL' );
@@ -24,12 +25,12 @@ use Sys::Hostname;
 use Carp qw( carp croak );
 use Errno qw/ EINTR /;
 
-$VERSION = "0.24";
-@EXPORT  = qw( IMP_CRYPT  EXP_CRYPT  CLR_CRYPT
-               DATA_PROT_CLEAR  DATA_PROT_PRIVATE
-               DATA_PROT_SAFE   DATA_PROT_CONFIDENTIAL
-               CMD_INFO  CMD_OK      CMD_MORE    CMD_REJECT
-               CMD_ERROR CMD_PROTECT CMD_PENDING );
+$VERSION = "0.25";
+@EXPORT  = qw( IMP_CRYPT  EXP_CRYPT   CLR_CRYPT
+               DATA_PROT_CLEAR   DATA_PROT_PRIVATE
+               DATA_PROT_SAFE    DATA_PROT_CONFIDENTIAL
+               CMD_INFO   CMD_OK      CMD_MORE    CMD_REJECT
+               CMD_ERROR  CMD_PROTECT CMD_PENDING );
 $ERRSTR = "No Errors Detected Yet.";
 
 # Command Channel Protection Levels
@@ -52,7 +53,9 @@ use constant CMD_ERROR   => 5;
 use constant CMD_PROTECT => 6;
 use constant CMD_PENDING => 0;
 
-# File transfer modes
+# -------- Above Exported ---- Below don't bother to export --------
+
+# File transfer modes (the mixed modes have no code)
 use constant MODE_BINARY => "I";
 use constant MODE_ASCII  => "A";   # Default
 
@@ -71,6 +74,9 @@ use constant TRACE_MOD => 5;   # How many iterations between ".".  Must be >= 2.
 
 # Primarily used while the call to new() is in scope!
 my $FTPS_ERROR;
+
+# Used to handle trapping all warnings accross class instances
+my %warn_list;
 
 
 sub new {
@@ -91,8 +97,8 @@ sub new {
   if (ref ($arg->{SSL_Client_Certificate}) eq "HASH") {
      %ssl_args = %{$arg->{SSL_Client_Certificate}}
   } elsif (ref ($arg->{SSL_Advanced}) eq "HASH") {
-     %ssl_args = %{$arg->{SSL_Advanced}};       # Depreciated in v0.18
-     print STDERR "SSL_Advanced has been depreciated, use SSL_Client_Certificate instead!\n";
+     %ssl_args = %{$arg->{SSL_Advanced}};       # Depreciated in v0.18 (in 2011)
+     print STDERR "SSL_Advanced has been depreciated and will be removed soon in a future release!\nUse option SSL_Client_Certificate instead!\n";
   } else {
      # Stops the Man-In-The-Middle (MITM) security warning from start_ssl()
      # when it calls configure_SSL() in IO::Socket::SSL.
@@ -114,7 +120,10 @@ sub new {
   my $die          = $arg->{Croak}  || $arg->{Die};
   my $pres_ts      = $arg->{PreserveTimestamp} || 0;
   my $use_logfile  = $debug && (defined $arg->{DebugLogFile} &&
+                                ref ($arg->{DebugLogFile}) eq "" &&
                                 $arg->{DebugLogFile} ne "");
+  my $use_glob     = $debug && (defined $arg->{DebugLogFile} &&
+                                ref ($arg->{DebugLogFile}) eq "GLOB");
   my $localaddr    = $ssl_args{LocalAddr} || $arg->{LocalAddr};
   my $pret         = $arg->{Pret} || 0;
 
@@ -122,29 +131,42 @@ sub new {
   my $pasvHost     = $arg->{OverridePASV};
   my $fixHelp      = $arg->{OverrideHELP};
 
-  # Used to emulate bug # 73115 (Expects an offset on where to insert "\n".
-  my $emulate_bug  = $arg->{EmulateBug} || 0;   # Undocumented feature.
+  # A special case used for further debugging the response!
+  # This special value is undocumented in the POD on purpose!
+  my $debug_extra = ($debug == 99) ? 1 : 0;
 
+  my $pv = sprintf ("%s  [%vd]", $], $^V);   # The version of perl!
+  my $f_exists = 0;
 
   # Determine where to write the Debug info to ...
-  my $pv = sprintf ("%s  [%vd]", $], $^V);   # The version of perl!
   if ( $use_logfile ) {
      my $open_mode = ( $debug == 2 ) ? ">>" : ">";
      my $f = $arg->{DebugLogFile};
      unlink ( $f )  if ( -f $f && $open_mode ne ">>" );
-     my $f_exists = (-f $f);
+     $f_exists = (-f $f);
+
+     # Always calls die on failure to open the requested log file ...
      open ( $FTPS_ERROR, "$open_mode $f" ) or
                _croak_or_return (undef, 1, 0,
                                  "Can't create debug logfile: $f ($!)");
+
+     $debug = 2;        # Save the file handle & later close it ...
+
+  } elsif ( $use_glob ) {
+     $FTPS_ERROR = $arg->{DebugLogFile};
+     $debug = 3;        # Save the file handle, but never close it ...
+  }
+
+  if ( $use_logfile || $use_glob ) {
      unless ( $f_exists ) {
         print $FTPS_ERROR "\nNet-FTPSSL Version: $VERSION\n\n";
         print $FTPS_ERROR "Perl: $pv,  OS: $^O\n\n";
      } else {
         print $FTPS_ERROR "\n\n";
      }
-     $debug = 2;                  # Already know Debug is turned on ...
+
   } elsif ( $debug ) {
-     $debug = 1;                  # Force to a specific Debug value ...
+     $debug = 1;                  # No file handle to save ...
 
 #    open ( $FTPS_ERROR, ">&STDERR" ) or
 #              _croak_or_return (undef, 1, 0,
@@ -162,7 +184,7 @@ sub new {
   }
 
   # Determines if we die if we will also need to write to the error log file ...
-  my $dbg_flg = $die ? ( $debug == 2 ? 1 : 0 ) : $debug;
+  my $dbg_flg = $die ? ( $debug >= 2 ? 1 : 0 ) : $debug;
 
   return _croak_or_return (undef, $die, $dbg_flg, "Host undefined")  unless $host;
 
@@ -223,6 +245,7 @@ sub new {
   _my_autoflush ( $socket );
 
   ${*$socket}{debug} = $debug;
+  ${*$socket}{debug_extra} = $debug_extra;
   ${*$socket}{Croak} = $die;
   ${*$socket}{Timeout} = $timeout;
 
@@ -309,6 +332,7 @@ sub new {
   ${*$obj}{Host}         = $host;
   ${*$obj}{Crypt}        = $encrypt_mode;
   ${*$obj}{debug}        = $debug;
+  ${*$obj}{debug_extra}  = $debug_extra;
   ${*$obj}{trace}        = $trace;
   ${*$obj}{buf_size}     = $buf_size;
   ${*$obj}{type}         = MODE_ASCII;
@@ -318,10 +342,9 @@ sub new {
   ${*$obj}{OverridePASV} = $pasvHost;
   ${*$obj}{dcsc_mode}    = FTPS_PASV;
   ${*$obj}{Pret}         = $pret;
-  ${*$obj}{EmulateBug}   = $emulate_bug;
   ${*$obj}{Timeout}      = $timeout;
 
-  ${*$obj}{ftpssl_filehandle} = $FTPS_ERROR  if ( $debug == 2 );
+  ${*$obj}{ftpssl_filehandle} = $FTPS_ERROR  if ( $debug >= 2 );
   $FTPS_ERROR = undef;
 
   # Must be last for certificates to work correctly ...
@@ -356,7 +379,18 @@ sub login {
   delete ( ${*$self}{_mask_value_in_response_} );
 
   if ( $logged_on ) {
-     $self->supported ("HELP");     # So help is always called early instead of later.
+     # So _help is always called early instead of later.
+     $self->supported ("HELP");
+
+     if ( ${*$self}{debug} && ${*$self}{debug_extra} ) {
+        my $hlp = join ("), (", sort keys %{$self->_help ()});
+        if ( $hlp eq "" ) {
+           my $msg = ( ${*$self}{OverrideHELP} ) ? "All" : "No";
+           $self->_print_LOG ("HELP: () --> $msg FTP Commands.\n");
+        } else {
+           $self->_print_LOG ("HELP: ($hlp)\n");
+        }
+     }
 
      if ( ${*$self}{FixPutTs} && ! $self->supported ("MFMT") ) {
         ${*$self}{FixPutTs} = 0;    # Not supported by this server after all!
@@ -375,9 +409,10 @@ sub quit {
   my $self = shift;
   $self->_quit() or return 0;   # Don't do a croak here, since who tests?
   _my_close ($self);            # Old way $self->close();
-  $self->_close_LOG ()  if ( ${*$self}{debug} );
   return 1;
 }
+
+#-----------------------------------------------------------------------
 
 sub force_epsv {
   my $self = shift;
@@ -620,7 +655,8 @@ sub _get_data_channel {
    return ( $io );
 }
 
-# Note: This doesn't reference $self on purpose! (so not a bug!) See Bug Id 82094
+# Note: This doesn't reference $self on purpose! (so not a bug!)
+#       See Bug Id 82094
 sub _my_autoflush {
    my $skt = shift;
 
@@ -636,7 +672,8 @@ sub _my_autoflush {
    return;
 }
 
-# Note: This doesn't reference $self on purpose! (so not a bug!) See Bug Id 82094
+# Note: This doesn't reference $self on purpose! (so not a bug!)
+#       See Bug Id 82094
 sub _my_close {
    my $io = shift;
 
@@ -1135,10 +1172,15 @@ sub uput {              # Unique put (STOU command)
   if ( $resp ) {
     # The file name may appear in either message returned.  (The 150 or 226 msg)
     # So lets check both messages merged together!
+    # Assumes no spaces are in the new file's name!
     my $msg = $msg1 . "\n" . $msg2;
 
     if ( $msg =~ m/(FILE|name):\s*([^\s)]+)($|[\s)])/im ) {
        $requested_file_name = $2;   # We found an actual name to use ...
+
+    } elsif ( $msg =~ m/Transfer starting for\s+([^\s]+)($|\s)/im ) {
+       $requested_file_name = $1;   # We found an actual name to use ...
+       $requested_file_name =~ s/[.]$//;   # Remove trailing ".".
     }
 
     # TODO: Figure out other uput variants to check for besides the ones above.
@@ -1151,10 +1193,16 @@ sub uput {              # Unique put (STOU command)
        $self->_mfmt ($tm, $requested_file_name);
     }
 
+    # Fix in v0.25
+    # Some servers returned the full path to the file.  But that sometimes
+    # causes issues.  So always strip off the path information.  If there
+    # was a path in the source file, then the caller knows where it was!
+    $requested_file_name = basename ($requested_file_name);
+
     return ( $requested_file_name );
   }
 
-  return ( undef );
+  return ( undef );        # Fatal error & Croak is turned off.
 }
 
 # Makes sure the scratch file name generated appears in the same directory as
@@ -1321,7 +1369,7 @@ sub transfer {
    my $offset      = shift || ${*$self}{net_ftpssl_rest_offset} || 0;
 
    # Verify we are dealing with a Net::FTPSSL object ...
-   if ( ref($dest_ftp) eq "" || ref($dest_ftp) ne "Net::FTPSSL" ) {
+   if ( ref($dest_ftp) eq "" || ref($dest_ftp) ne __PACKAGE__ ) {
       return $self->_croak_or_return(0, "The destination server must be a valid Net::FTPSSL object! (" . ref($dest_ftp) . ")");
    }
 
@@ -1496,7 +1544,7 @@ sub xtransfer {
    # See _get_scratch_file() for default valuies if undef!
    my ($prefix, $postfix, $body) = (shift, shift, shift);
 
-   if ( ref($dest_ftp) eq "" || ref($dest_ftp) ne "Net::FTPSSL" ) {
+   if ( ref($dest_ftp) eq "" || ref($dest_ftp) ne __PACKAGE__ ) {
       return $self->_croak_or_return(0, "The destination server must be a valid Net::FTPSSL object! (" . ref($dest_ftp) . ")");
    }
 
@@ -1809,12 +1857,12 @@ sub alloc {
 
 sub delete {
   my $self = shift;
-  return ($self->_test_croak ($self->command("DELE", @_)->response == CMD_OK));
+  return ($self->_test_croak ($self->command("DELE", @_)->response() == CMD_OK));
 }
 
 sub auth {
   my $self = shift;
-  return ($self->_test_croak ($self->command("AUTH", "TLS")->response == CMD_OK));
+  return ($self->_test_croak ($self->command("AUTH", "TLS")->response() == CMD_OK));
 }
 
 sub pwd {
@@ -1837,7 +1885,7 @@ sub pwd {
 
 sub cwd {
   my $self = shift;
-  return ( $self->_test_croak ($self->command("CWD", @_)->response == CMD_OK) );
+  return ( $self->_test_croak ($self->command("CWD", @_)->response() == CMD_OK) );
 }
 
 sub noop {
@@ -1864,7 +1912,7 @@ sub mkdir {
     my $self = shift;
     my $dir = shift;
     $self->command("MKD", $dir);
-    return ( $self->_test_croak ($self->response == CMD_OK) );
+    return ( $self->_test_croak ($self->response() == CMD_OK) );
 }
 
 # TODO: Make rmdir() working with recursion.
@@ -1872,13 +1920,13 @@ sub rmdir {
     my $self = shift;
     my $dir = shift;
     $self->command("RMD", $dir);
-    return ( $self->_test_croak ($self->response == CMD_OK) );
+    return ( $self->_test_croak ($self->response() == CMD_OK) );
 }
 
 sub site {
   my $self = shift;
 
-  return ($self->_test_croak ($self->command("SITE", @_)->response == CMD_OK));
+  return ($self->_test_croak ($self->command("SITE", @_)->response() == CMD_OK));
 }
 
 # A true boolean func, should never call croak!
@@ -1944,6 +1992,9 @@ sub ccc {
 
    # Do before the CCC command so we know which command is available to clear
    # out the command channel with.  All servers should support one or the other.
+   # We also want commands that return just one line!  [To make it less likely
+   # that the hack will cause response() to hang or get out of sync when
+   # unrecognizable junk is returned for the hack.]
    my $ccc_fix_cmd = $self->supported ("NOOP") ? "NOOP" : "PWD";
 
    # Request that just the commnad channel go clear ...
@@ -1959,7 +2010,7 @@ sub ccc {
    # Stop SSL, but leave the socket open!
    # Converts $self to IO::Socket::INET object instead of Net::FTPSSL
    # NOTE: SSL_no_shutdown => 1 doesn't work on some boxes, and when 0,
-   #       it hangs on others without the SSL_fast_shutdown => 1 cmd.
+   #       it hangs on others without the SSL_fast_shutdown => 1 option.
    # -------------------------------------------------------------------------
    unless ( $self->stop_SSL ( SSL_no_shutdown => 0, SSL_fast_shutdown => 1 ) ) {
       return $self->_croak_or_return (undef, "Command Channel downgrade failed!");
@@ -1970,22 +2021,22 @@ sub ccc {
    ${*$self}{_SSL_opened} = 0;      # To get rid of warning on quit ...
 
    # -------------------------------------------------------------------------
-   # This is a hack, but seems to resolve the command channel corruption
-   # problem where 1st command or two afer CCC may fail or look strange ...
+   # This is a hack, but it seems to resolve the command channel corruption
+   # problem where the 1st command or two afer CCC may fail or look strange ...
    # I've even caught it a few times sending back 2 independant OK responses
    # to a single command!
-   # -------------------------------------------------------------------------
+   # ------------------------------------------------------------------------
    my $ok = CMD_ERROR;
-   foreach ( 1...3 ) {
-      $ok = $self->command ($ccc_fix_cmd)->response ();
-      last  if ( $ok == CMD_OK );
+   foreach ( 1..4 ) {
+      $ok = $self->command ($ccc_fix_cmd)->response (1);   # This "1" is a hack!
+      last  if ( $ok eq CMD_OK );   # Do char compare since not always a number.
    }
 
    if ( $ok == CMD_OK ) {
       # Complete the hack, now force a failure response!
       # And if the server was still confused ?
       # Keep asking for responses until we get our error!
-      $self->command ("xxxx");
+      $self->command ("xxxxNOOP");
       while ( $self->response () == CMD_OK ) {
          my $tmp = CMD_ERROR;   # A no-op command for loop body ...
       }
@@ -1998,17 +2049,19 @@ sub ccc {
 }
 
 
-# Allow the user to send a FTP command directly, BE CAREFUL !!
+#-----------------------------------------------------------------------
+# Allow the user to send a FTP random command directly, BE CAREFUL !!
 # Since doing unsupported stuff, we can never call croak!
 # Also not all unsupported stuff will show up in supported().
-
+# So all we can do is try to prevent commands known to have side affects.
+#-----------------------------------------------------------------------
 sub quot {
    my $self = shift;
    my $cmd  = shift;
 
    # Format the command for testing ...
-   my $cmd2 = uc ($cmd || "");
-   $cmd2 = $1  if ( $cmd2 =~ m/^\s*(\S+)(\s|$)/ );
+   my $cmd2 = (defined $cmd) ? uc ($cmd) : "";
+   $cmd2 = $1  if ( $cmd2 =~ m/^\s*(\S*)(\s|$)/ );
 
    my $msg = "";   # Assume all is OK ...
 
@@ -2023,11 +2076,18 @@ sub quot {
 
    } elsif ( $cmd2 eq "" ) {
       $msg = "x21 Where is the needed command?";
+      $cmd = "";    # Making sure it isn't undefined.
+
+   } else {
+      # Strip off leading spaces, some servers choak on them!
+      $cmd =~ s/^\s+//;
    }
 
    if ( $msg ne "" ) {
+      my $cmd_str = join (" ", $cmd, @_);
       ${*$self}{last_ftp_msg} = $msg;
       substr (${*$self}{last_ftp_msg}, 0, 1) = CMD_REJECT;
+      $self->_print_DBG ( ">>+ " . $cmd_str . "\n" );
       $self->_print_DBG ( "<<+ " . ${*$self}{last_ftp_msg} . "\n" );
       return (CMD_REJECT);
    }
@@ -2048,6 +2108,20 @@ sub ascii {
 sub binary {
   my $self = shift;
   ${*$self}{type} = MODE_BINARY;
+  return $self->_test_croak ($self->_type(MODE_BINARY));
+}
+
+# Server thinks it's ASCII & Client thinks it's BINARY
+sub mixedModeAI {
+  my $self = shift;
+  ${*$self}{type} = MODE_BINARY;
+  return $self->_test_croak ($self->_type(MODE_ASCII));
+}
+
+# Server thinks it's BINARY & Client thinks it's ASCII
+sub mixedModeIA {
+  my $self = shift;
+  ${*$self}{type} = MODE_ASCII;
   return $self->_test_croak ($self->_type(MODE_BINARY));
 }
 
@@ -2276,7 +2350,7 @@ sub _help {
 
       foreach my $line (@lines) {
          # Strip off the code & separator or leading blanks if multi line.
-         $line =~ s/(^[0-9]+[\s-]?)|(^\s+)//;
+         $line =~ s/((^[0-9]+[\s-]?)|(^\s*))//;
          my $lead = $1;
 
          next  if ($line eq "");
@@ -2388,13 +2462,15 @@ sub _feat {
 
       foreach my $line (@lines) {
          # Strip off the code & separator or leading blanks if multi line.
-         $line =~ s/(^[0-9]+[\s-]?)|(^\s+)//;
+         $line =~ s/((^[0-9]+[\s-]?)|(^\s*))//;
          my $lead = $1;
 
          # Skip over the start/end part of the response ...
          next if ( defined $lead && $lead =~ m/^\d+[\s-]?$/ );
 
          next if ( $line =~ m/[*]$/ );         # Command ends in "*" ???
+
+         next if ( $line eq ""  );             # Skip over all blank lines
 
          my @lst = split (/[\s,.;]+/, $line);  # Break into individual parts
 
@@ -2500,7 +2576,7 @@ sub _croak_or_return {
          my $c = (caller(1))[3] || "";
 
          # Trying to prevent infinite recursion ...
-         if ( ref($self) eq "Net::FTPSSL" &&
+         if ( ref($self) eq __PACKAGE__ &&
                     (! exists ${*$self}{_command_failed_}) &&
                     (! exists ${*$self}{recursion}) &&
                     $c ne "Net::FTPSSL::command" &&
@@ -2532,12 +2608,13 @@ sub _croak_or_return {
 
 #-----------------------------------------------------------------------
 # Messages handler
-# -----------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # Called by both Net::FTPSSL and IO::Socket::INET classes.
 #-----------------------------------------------------------------------
 
 sub command {
-  my $self = shift;
+  my $self = shift;  # Remaining arg(s) accessed directly.
+
   my @args;
   my $data;
 
@@ -2546,7 +2623,7 @@ sub command {
 
   # remove undef values from the list.
   # Maybe I have to find out why those undef were passed.
-  @args = grep defined($_), @_ ;
+  @args = grep ( defined($_), @_ );
 
   $data = join( " ",
                 map { /\n/
@@ -2557,7 +2634,7 @@ sub command {
 
   # Log the command being executed ...
   if ( ${*$self}{debug} ) {
-     my $prefix = ( ref($self) eq "Net::FTPSSL" ) ? ">>> " : "SKT >>> ";
+     my $prefix = ( ref($self) eq __PACKAGE__ ) ? ">>> " : "SKT >>> ";
      if ( $data =~ m/^PASS\s/ ) {
         _print_LOG ( $self, $prefix . "PASS *******\n" ); # Don't echo passwords
      } elsif ( $data =~ m/^USER\s/ ) {
@@ -2596,11 +2673,25 @@ sub command {
 # partial line response!  (Drat, that just happened!  See 0.20 Change notes.)
 # -----------------------------------------------------------------------------
 # Called by both Net::FTPSSL and IO::Socket::INET classes.
+# Hence using func($self, ...) instead of $self->func(...)
 # -----------------------------------------------------------------------------
 # Returns a single digit response code! (The CMD_* constants!)
 # -----------------------------------------------------------------------------
 sub response {
-  my $self = shift;
+  my $self     = shift;
+  my $ccc_mess = shift || 0;  # Only set by the CCC command!  Hangs if not used.
+
+  # The buffer size to use during the sysread() call on the command channel.
+  my $buffer_size = 4096;
+
+  # Uncomment to experiment with variable buffer sizes.
+  # Very usefull in debugging _response_details () & simulating server issues.
+  # Supports any value >= 1.
+  # $buffer_size = 10;
+
+  # The warning to use when printing past the end of the current response!
+  # Used in place of $prefix in certain conditions.
+  my $warn = "Warning: Attempted to read past end of response! ";
 
   # Only continue if the command() call worked!
   # Otherwise on failure this method will hang!
@@ -2608,110 +2699,471 @@ sub response {
   return (CMD_ERROR)  if ( exists ${*$self}{_command_failed_} );
 
   ${*$self}{last_ftp_msg} = "";   # Clear out the message
-  my $prefix = ( ref($self) eq "Net::FTPSSL" ) ? "<<< " : "SKT <<< ";
+  my $prefix = ( ref($self) eq __PACKAGE__ ) ? "<<< " : "SKT <<< ";
 
-  my ( $data, $code, $sep, $desc ) = ( "", CMD_ERROR, "-", "" );
+  my $timeout = ${*$self}{Timeout};
 
-  while ($sep eq "-") {
-     if ( exists ${*$self}{next_ftp_msg} ) {
-        # The previous call to response() left behind some unprocessed data.
-        # So lets use the left over data instead of calling sysread().
-        $data = ${*$self}{next_ftp_msg};
-        delete ( ${*$self}{next_ftp_msg} );   # No more left over data!
-     } else {
-        # Check if there is data pending on the command channel ...
-        my $rin = "";
-        vec ($rin, fileno($self), 1) = 1;
-        if ( select ($rin, undef, undef, ${*$self}{Timeout}) > 0 ) {
-           # Now lets read the response from the command channel.
-           my $read = sysread( $self, $data, 4096);
-           unless( $read ) {
-             # Not called as an object member in case $self not a FTPSSL obj.
-             _croak_or_return ($self, 0, (defined $read)
-                                ? "Can't read command channel socket: $!"
-                                : "Unexpected EOF on command channel socket: $!");
-             return (CMD_ERROR);
-           }
-        } else {
-           _croak_or_return ($self, 0, "Timed out waiting for a response!");
-           return (CMD_ERROR);
-        }
+  my $sep = ( ${*$self}{debug} && ${*$self}{debug_extra} ) ? "===============" : undef;
+
+  # Starting a new message ...
+  ${*$self}{last_ftp_msg} = "";
+  my $data = "";
+  my ($done, $complete) = (0, 1);
+
+  # Check if we need to process anything read in past the previous command.
+  # Hopefully under normal conditions we'll find nothing to process.
+  if ( exists ${*$self}{next_ftp_msg} ) {
+     _print_LOG ( $self, "Info: Response found from previous read ...\n")  if ( ${*$self}{debug} );
+     $data = ${*$self}{next_ftp_msg};
+     delete ( ${*$self}{next_ftp_msg} );
+     ($done, $complete) = _response_details ($self, $prefix, \$data, 0, $ccc_mess);
+     if ( $done && $complete ) {
+        _print_edited_response ( $self, $prefix, ${*$self}{last_ftp_msg}, $sep, 0 );
+        _print_edited_response ( $self, $warn, ${*$self}{next_ftp_msg}, $sep, 2 );
+        return substr( ${*$self}{last_ftp_msg}, 0, 1 );
      }
 
-     # Now lets process the response messages we've read in.  See the comments
-     # above this function on why this code is such a mess.
-     my @lines = split( "\015\012", $data );
-     my $done = 0;
-     my $remember = 0;
-
-     foreach my $line ( @lines ) {
-       if ( $remember ) {
-          # Continuing to save the next response for next time ...
-          _print_LOG ( $self, "Saving rest of the next response! ($line)\n" )  if ( ${*$self}{debug} );
-          ${*$self}{next_ftp_msg} .= "\015\012" . $line;
-          next;
-       }
-
-       if ( $done ) {
-          # We read past the end of the current response into the next one ...
-          _print_LOG ( $self, "Warning: Attempted to read past end of response! (next: $line)\n" )  if ( ${*$self}{debug} );
-          ${*$self}{next_ftp_msg} = $line;
-          $remember = 1;
-          next;
-       }
-
-       # Check if the response is complete ...
-       if ( $line =~ m/^(\d+)([-\s]?)(.*)$/s ) {
-          ($code, $sep, $desc) = ($1, $2, $3);
-
-          # Fix for bug # 73115 ...
-          $sep = "-"  if (length ($code) < 3 && $sep eq "" and $desc eq "");
-       }
-
-       # Save the unedited message ...
-       ${*$self}{last_ftp_msg} .= $line;
-
-       if (${*$self}{debug}) {
-          # Do we need to hide a value in the logged response ???
-          if ( exists ${*$self}{_hide_value_in_response_} ) {
-            my $val = _mask_regex_chars ($self, ${*$self}{_hide_value_in_response_});
-            my $mask = ${*$self}{_mask_value_in_response_} || "????";
-            $line =~ s/$val/<$mask>/g;
-          }
-
-          _print_LOG ( $self, $prefix . $line . "\n" );
-       }
-
-       if ( $sep eq '-' ) {
-          ${*$self}{last_ftp_msg} .= "\n";       # Restore the internal <CR>.
-       } else {
-          $done = 1;            # The response is complete now.
-       }
-     }    # End for $line loop
-  }       # End while $sep loop
-
-  if (${*$self}{EmulateBug}) {
-     # So I can test out the rest of the code by inserting random "\n" into
-     # the response.  Bug # 73115 did this for the code above, but I also
-     # needed to debug the rest of the class when this happened, and I don't
-     # have a server that does this.
-     my $tmp = "." x ${*$self}{EmulateBug};
-     ${*$self}{last_ftp_msg} =~ s/^($tmp)/$1\n/;
-     if ( ${*$self}{debug} ) {
-        $tmp = substr( ${*$self}{last_ftp_msg}, 0, 1 );
-        _print_LOG ( $self, "(start-bug-fix-start-bug-fix)\n" );
-        _print_LOG ( $self, ${*$self}{last_ftp_msg} );
-        _print_LOG ( $self, "\n========== ($tmp) ===========\n" );
-     }
+     # Should never happen, but using very short timeout on continued commands.
+     $timeout = 2;
   }
+
+  # Check if there is data still pending on the command channel ...
+  my $rin = "";
+  vec ($rin, fileno($self), 1) = 1;
+  my $res = select ( $rin, undef, undef, $timeout );
+  if ( $res > 0 ) {
+     # Now lets read the response from the command channel itself.
+     my $cnt = 0;
+     while ( sysread( $self, $data, $buffer_size ) ) {
+        ($done, $complete) = _response_details ($self, $prefix, \$data, $done, $ccc_mess);
+        ++$cnt;
+        last  if ($done && $complete);
+     }
+
+     # Check for errors ...
+     if ( $cnt == 0 || $! ne "" ) {
+        if ($cnt > 0) {
+          _print_edited_response ( $self, $prefix, ${*$self}{last_ftp_msg}, $sep, 1 );
+          _print_edited_response ( $self, $warn, ${*$self}{next_ftp_msg}, $sep, 2 );
+        }
+        _croak_or_return ($self, 0, "Unexpected EOF on Command Channel [$cnt] ($!)");
+        return (CMD_ERROR);
+     }
+
+  } elsif ( ${*$self}{last_ftp_msg} ne "" ) {
+     # A Timeout here is OK, it meant the previous command was complete.
+     my $nothing = "";
+
+  } else {
+     _print_edited_response ( $self, $prefix, ${*$self}{last_ftp_msg}, $sep, 1 );
+     _print_edited_response ( $self, $warn, ${*$self}{next_ftp_msg}, $sep, 2 );
+     _croak_or_return ($self, 0, "Timed out waiting for a response! [$res] ($!)");
+     return (CMD_ERROR);
+  }
+
+  # Now print out the final patched together responses ...
+  _print_edited_response ( $self, $prefix, ${*$self}{last_ftp_msg}, $sep, 0 );
+  _print_edited_response ( $self, $warn, ${*$self}{next_ftp_msg}, $sep, 2 );
 
   # Returns the 1st digit of the 3 digit status code!
   return substr( ${*$self}{last_ftp_msg}, 0, 1 );
 }
 
+#-----------------------------------------------------------------------
+# Mask sensitive information before it's written to the log file.
+# Separated out since done in multiple places.
+#-----------------------------------------------------------------------
+sub _print_edited_response {
+   my $self    = shift;
+   my $prefix  = shift;   # "<<< " vs "SKT <<< ".
+   my $msg     = shift;   # The response to print.  (may be undef)
+   my $sep     = shift;   # An optional separator string.
+   my $bracket = shift;   # 0 or 1 or 2.
+
+   # Tells which separator to use to break up lines in $msg!
+   my $breakStr = ($bracket == 2) ? "\015\012" : "\n";
+
+   # A safety check to simplify when calling with undefined {next_ftp_msg}.
+   unless (defined $msg) {
+      return;
+   }
+
+   if ( ${*$self}{debug} ) {
+      # Do we need to hide a value in the logged response ???
+      if ( exists ${*$self}{_hide_value_in_response_} ) {
+         my $val = _mask_regex_chars ($self, ${*$self}{_hide_value_in_response_});
+         my $mask = ${*$self}{_mask_value_in_response_} || "????";
+         $msg =~ s/$val/<$mask>/g;
+      }
+
+      if ($bracket) {
+         $msg = $prefix . "[" . join ("]\n${prefix}[", split ($breakStr, $msg)) . "]";
+      } else {
+         $msg = $prefix . join ("\n$prefix", split ($breakStr, $msg));
+      }
+
+      if ( defined $sep && $sep !~ m/^\s*$/ ) {
+         $msg = "Start: " . $sep . "\n" . $msg . "\nEnd::: " . $sep;
+      }
+      _print_LOG ( $self, $msg .  "\n");
+   }
+
+   return;
+}
+
+#-----------------------------------------------------------------------
+# Broken out from response() in order to simplify the logic.
+# The previous version was getting way too convoluted to support.
+# Any bugs in this function easily causes things to hang or insert
+# random <CR> into the returned messages!
+#-----------------------------------------------------------------------
+# If you need to turn on the logging for this method use "Debug => 99"
+# in the constructor!
+#-----------------------------------------------------------------------
+# What a line should look like
+#    <code>-<desc>   ---  Continuation line(s) [repeateable]
+#    <code> <desc>   ---  Response completed line
+#    Anything else means it's a Continuation line with embedded <CR>'s.
+#    I think its safe to say the response completed line dosn't have
+#    any extra <CR>'s embeded in it.  Otherwise it's kind of difficult
+#    to know when to stop reading from the socket & risk hangs.
+#-----------------------------------------------------------------------
+# But what I actually saw in many cases: (list not complete)
+#     2
+#     13-First Line
+#     213
+#     -Second Line
+#     213-
+#     Third Line
+#     213-Fourth
+#      Line
+# Turns out sysread() isn't generous.  It returns as little as possible
+# sometimes.  Even when there is plenty of space left in the buffer.
+# Hence the strange behaviour above.  But once all the pieces are put
+# together properly, you see what you expected in the 1st place.
+#-----------------------------------------------------------------------
+# Returns if it thinks the current response is done & complete or not.
+#    end_respnose   - (passed as "$status" next time called)
+#        0 - Response isn't complete yet.
+#        1 - Response was done, but may or may not be truncated in <desc>.
+#    response_complete - Tells if the final line is complete or truncated.
+#        0 - Line was truncated!
+#        1 - Last line was complete!
+# Both must be true to stop reading from the socket.
+# If we've read past the response into the next one, we don't stop
+# reading until the overflow response is complete as well.  Otherwise
+# the Timeout logic might not work properly later on.
+#-----------------------------------------------------------------------
+# The data buffer.  I've seen the following:
+#    1) A line begining with: \012  (The \015 ended the pevious buffer)
+#    2) A line ending with:   \015  (The \012 started the next buffer)
+#    3) Lines not ending with: \015\012
+#    4) A line only containing: \015\012
+#    5) A line only containing: 012
+#    6) Lines ending with: \015\012
+# If you see the 1st three items, you know there is more to read
+# from the socket.  If you see the last 3 items, it's possible
+# that the next read from the socket will hang if you've already
+# seen the response complete message.  So be careful here!
+#-----------------------------------------------------------------------
+sub _response_details {
+   my $self       = shift;
+   my $prefix     = shift;   # "<<< " vs "SKT <<< ".
+   my $data_ref   = shift;   # The data buffer to parse ...
+   my $status     = shift;   # 0 or 1   (the returned status from previous call)
+
+   my $ccc_kludge = shift;   # Tells us if we are dealing with a corrupted CC
+                             # due to the aftermath of a CCC command!
+                             # 1st <CR> hit terminates the command in this case!
+
+   # The return values ...
+   my ($end_response, $response_complete) = (0, 0);
+
+   # A more restrictive option for turning on logging is needed in this method.
+   # Otherwise too much info is written to the logs and it is very confusing.
+   #    (Debug => 99 turns this extra logging on!)
+   # So only use this special option if we need to debug this one method!
+   my $debug = ${*$self}{debug} && ${*$self}{debug_extra};
+
+   # Assuming that if the line doesn't end in a <CR>, the response is truncated
+   # and we'll need the next sysread() to continue with the response.
+   # Split drops trailing <CR>, so need this flag to detect this.
+   my $end_with_cr = (substr (${$data_ref}, -2) eq "\015\012") ? 1 : 0;
+
+   if ( $debug ) {
+      my $type = ( exists ${*$self}{next_ftp_msg} ) ? "Overflow" : "Current";
+      my $k = $ccc_kludge ? ", Kludge: $ccc_kludge" : "";
+      _print_LOG ($self, "In _response_details ($type, Status: $status, len = " . length (${$data_ref}) . ", End: ${end_with_cr}${k})\n");
+   }
+
+   my ($ref, $splt);
+   if ( exists ${*$self}{next_ftp_msg} ) {
+      $ref = \${*$self}{next_ftp_msg};
+      $splt = "\015\012";
+   } else {
+      $ref = \${*$self}{last_ftp_msg};
+      $splt = "\n";
+   }
+
+   # Sysread() does split the \015 & \012 to seperate lines, so test for it!
+   # And fix the problem as well if it's found!
+   my $index = 0;
+   if ( substr (${$data_ref}, 0, 1) eq "\012" ) {
+      # It hangs if I strip off from $data_ref, so handle later! (via $index)
+      if ( substr (${$ref}, -1) eq "\015" ) {
+         substr (${$ref}, -1) = $splt;    # Replace with proper terminator.
+         $index = 1;
+         _print_LOG ($self, "Fixed 015/012 split!\n")  if ( $debug );
+         if ( ${$data_ref} eq "\012" ) {
+            return ($status || $ccc_kludge, 1);     # Only thing on the line.
+         }
+      }
+   }
+
+   # Check if the last line from the previous call was trucated ...
+   my $trunc = "";
+   if ( ${$ref} ne "" && substr (${$ref}, -length($splt)) ne $splt ) {
+      $trunc = (split ($splt, ${$ref}))[-1];
+   }
+
+   my @term;
+   my @data;
+   if ( $end_with_cr ) {
+      # Protects from split throwing away trailing empty lines ...
+      @data = split( "\015\012", substr ( ${$data_ref}, $index ) . "|" );
+      pop (@data);
+   } else {
+      # Last line was truncated ...
+      @data = split( "\015\012", substr ( ${$data_ref}, $index ) );
+   }
+
+   # Tag which lines are complete! (Only the last one can be truncated)
+   foreach (0..$#data) {
+      $term[$_] = 1;
+   }
+   $term[-1] = $end_with_cr;
+
+   # Current command or rolled over to the next command ???
+   my (@lines, @next, @line_term, @next_term);
+   if ( exists ${*$self}{next_ftp_msg} ) {
+      @next = @data;
+      @next_term = @term;
+      @data = @term = @lines;     # All are now empty.
+   } else {
+      @lines = @data;
+      @line_term = @term;
+      @data  = @term = @next;     # All are now empty.
+   }
+
+   # ------------------------------------------------------------------------
+   # Now lets process the response messages we've read in.  See the comments
+   # above response() on why this code is such a mess.
+   # But it's much cleaner than it used to be.
+   # ------------------------------------------------------------------------
+   my ( $code, $sep, $desc, $done ) = ( CMD_ERROR, "-", "", 0 );
+   my ( $line, $term );
+
+   foreach ( 0..$#lines ) {
+      $line = $lines[$_];
+      $term = $line_term[$_];
+
+      # If the previous line was the end of the response ...
+      # There can be no <CR> in that line!
+      # So if true, it means we've read past the end of the response!
+      if ( $done ) {
+         push (@next, $line);
+         push (@next_term, $term);
+         next;
+      }
+
+      # Always represents the start of a new line ...
+      my $test = $trunc . $line;
+      $trunc = "";   # No longer possible for previous line to be truncated.
+
+      # Check if this line marks the response complete! (If sep is a space)
+      if ( $test =~ m/^(\d{3})([-\s])(.*)$/s ) {
+         ($code, $sep, $desc) = ($1, $2, $3);
+         $done = ($sep eq " ") ? $term : 0;
+
+         # Update the return status ...
+         $end_response = ($sep eq " ") ? 1: 0;
+         $response_complete = $term;
+      }
+
+      # The CCC command messes up the Command Channel for a while!
+      # So we need this work arround to immediately stop processing
+      # to avoid breaking the command channel or hanging things.
+      if ( $ccc_kludge && $term && ! $done ) {
+         _print_LOG ( $self, "Kludge: 1st CCC work around detected ...\n")  if ( $debug );
+         $end_response = $response_complete = $done = 1;
+      }
+
+      # Save the unedited message ...
+      ${*$self}{last_ftp_msg} .= $line;
+
+      # Write to the log file if requested ...
+      # But due to random splits, it risks not masking properly!
+      _print_edited_response ( $self, $prefix, $line, undef, 1 )  if ( $debug );
+
+      # Finish the current line ...
+      if ($sep eq "-" && $term) {
+         ${*$self}{last_ftp_msg} .= "\n";    # Restore the internal <CR>.
+      }
+   }
+
+   # ------------------------------------------------------------------------
+   # Process the response to the next command ... (read in with this one)
+   # Shouldn't happen, but it sometimes does ...
+   # ------------------------------------------------------------------------
+   my $warn = "Warning: Attempting to read past end of response! ";
+   my $next_kludge = 0;
+   $done = 0;
+   foreach ( 0..$#next ) {
+      $next_kludge = 1;
+      $line = $next[$_];
+      $term = $next_term[$_];
+
+      # We've read past the end of the current response into the next one ...
+      _print_edited_response ( $self, $warn, $line, undef, 2 )  if ( $debug );
+
+      if ( ! exists ${*$self}{next_ftp_msg} ) {
+         ${*$self}{next_ftp_msg} = $line;
+      } elsif ( $trunc ne "" ) {
+         ${*$self}{next_ftp_msg} .= $line;
+      } else {
+         ${*$self}{next_ftp_msg} .= "\015\012" . $line;
+      }
+
+      # Always represents the start of a new line ...
+      my $test = $trunc . $line;
+      $trunc = "";   # No longer possible for previous line to be truncated.
+
+      # Check if this line marks the response complete! (If sep is a space)
+      if ( $test =~ m/^(\d{3})([-\s])(.*)$/s ) {
+         ($code, $sep, $desc) = ($1, $2, $3);
+         $done = ($sep eq " ") ? $term : 0;
+
+         # Update the return status ...
+         $end_response = ($sep eq " ") ? 1: 0;
+         $response_complete = $term;
+      }
+   }
+
+   if ( $end_with_cr && exists ${*$self}{next_ftp_msg} ) {
+      ${*$self}{next_ftp_msg} .= "\015\012";
+   }
+
+   # Complete the Kludge! (Only needed if entered the @next loop!)
+   if ( $ccc_kludge && $next_kludge && ! ($end_response && $response_complete) ) {
+      _print_LOG ( $self, "Kludge: 2nd CCC work around detected ...\n")  if ( $debug );
+      $end_response = $response_complete = 1;
+   }
+
+   return ($end_response, $response_complete);
+}
+
+#-----------------------------------------------------------------------
+
 sub last_message {
    my $self = shift;
    return ${*$self}{last_ftp_msg};
+}
+
+#-----------------------------------------------------------------------
+# This method sets up a trap so that warnings can be written to my logs.
+# Always call like:  $ftp->trapWarn().
+#-----------------------------------------------------------------------
+sub trapWarn {
+   my $self  = shift;
+   my $force = shift || 0;   # Only used by t/10-compelx.t & t/20-certificate.t
+                             # Do not use the $force parameter otherwise!
+                             # You've been warned!
+
+   my $res = 0;    # Warnings are not yet trapped ...
+
+   # Only trap warnings if a debug log is turned on to write to ...
+   if ( defined $self && ${*$self}{debug} &&
+        ($force || exists ${*$self}{ftpssl_filehandle}) ) {
+      my $tmp = $SIG{__WARN__};
+
+      # Must do as an inline function call so things will go to
+      # the proper log file.
+      my $func_ref = sub { $self->_print_LOG ("WARNING: " . $_[0]); };
+
+      $warn_list{$self} = $func_ref;
+
+      # This test prevents a recursive trap ...
+      if (! exists $warn_list{OTHER}) {
+         $warn_list{OTHER} = $tmp;
+         $SIG{__WARN__} = __PACKAGE__ . "::_handleWarn";
+      }
+
+      $res = 1;     # The warnings are trapped now ...
+   }
+
+   return ($res);   # Whether trapped or not!
+}
+
+# Warning, this method cannot be called as a member function.
+# So it will never reference $self!  It's also not documented in the POD!
+# See trapWarn() instead!
+sub _handleWarn {
+   my $warn = shift;   # The warning being processed ...
+
+   # Print warning to each of the registered log files.
+   # Will always be a reference to the function to call!
+   my $func_ref;
+   foreach ( keys %warn_list ) {
+      next   if ($_ eq "OTHER");
+      $func_ref = $warn_list{$_};
+      $func_ref->( $warn );    # Prints to an open Net::FTPSSL log file ...
+   }
+
+   # Was there any parent we replaced to chain the warning to?
+   if (exists $warn_list{OTHER} && defined $warn_list{OTHER}) {
+      $func_ref = $warn_list{OTHER};
+      if (ref ($func_ref) eq "CODE") {
+         $func_ref->( $warn );
+      } elsif ( $func_ref eq "" || $func_ref eq "DEFAULT" ) {
+         print STDERR "$warn\n";
+      } elsif ( $func_ref ne "IGNORE" ) {
+         &{\&{$func_ref}}($warn);   # Will throw exception if doesn't exist!
+      }
+   }
+}
+
+# Called automatically when an instance of Net::FTPSSL goes out of scope!
+# Only called if new() was successfull!  Used so we could remove all this
+# termination logic from quit()!
+sub DESTROY {
+   my $self = shift;
+
+   if ( ${*$self}{debug} ) {
+      # Disable optional trapping of the warnings written to the log file
+      # now that we're going out of scope!
+      if ( exists $warn_list{$self} ) {
+         delete ($warn_list{$self});
+      }
+
+      # Now let's close the log file itself ...
+      $self->_close_LOG ();
+
+      # Comment out this Debug Statement when no longer needed!
+      # print STDERR "Good Bye FTPSSL instance! (", ref($self), ")  [$self]\n";
+   }
+}
+
+# Called automatically when this module is removed from memory.
+# NOTE: Due to how Perl's garbage collector works, in many cases END may be
+#       called before DESTROY is called!  Not what you'd expect!
+sub END {
+   # Restore to original setting when the module gets unloaded from memory!
+   # If this entry wasn't created, then we never redirected any warnings!
+   if ( exists $warn_list{OTHER} ) {
+      $SIG{__WARN__} = $warn_list{OTHER};
+      delete ( $warn_list{OTHER} );
+      # print STDERR "Good Bye FTPSSL! (", $SIG{__WARN__}, ")\n";
+   }
 }
 
 #-----------------------------------------------------------------------
@@ -2902,6 +3354,18 @@ sub _print_LOG
    }
 }
 
+sub get_log_filehandle
+{
+   my $self = shift;
+
+   my $FILE;
+   if ( defined $self && exists ${*$self}{ftpssl_filehandle} ) {
+      $FILE = ${*$self}{ftpssl_filehandle};
+   }
+
+   return ($FILE);
+}
+
 # Only write to the log if debug is turned on ...
 # So we don't have to test everywhere ...
 sub _print_DBG
@@ -2918,9 +3382,9 @@ sub _close_LOG
 
   if ( defined $self && exists ${*$self}{ftpssl_filehandle} ) {
      my $FILE = ${*$self}{ftpssl_filehandle};
-     close ($FILE);
+     close ($FILE)   if ( ${*$self}{debug} == 2 );
      delete ( ${*$self}{ftpssl_filehandle} );
-     # ${*$self}{debug} = 1;
+     ${*$self}{debug} = 1;     # Back to using STDERR again ...
   }
 }
 
@@ -2934,29 +3398,30 @@ __END__
 
 Net::FTPSSL - A FTP over SSL/TLS class
 
-=head1 VERSION 0.24
+=head1 VERSION 0.25
 
 =head1 SYNOPSIS
 
   use Net::FTPSSL;
 
-  my $ftps = Net::FTPSSL->new('ftp.yoursecureserver.com', 
+  my $ftps = Net::FTPSSL->new('ftp.your-secure-server.com', 
                               Encryption => EXP_CRYPT,
-                              Debug => 1) 
-    or die "Can't open ftp.yoursecureserver.com\n$Net::FTPSSL::ERRSTR";
+                              Debug => 1, DebugLogFile => "myLog.txt",
+                              Croak => 1);
 
-  $ftps->login('anonymous', 'user@localhost') 
-    or die "Can't login: ", $ftps->last_message();
+  $ftps->trapWarn ();     # Only call if opening a CPAN bug report.
 
-  $ftps->cwd("/pub") or die "Can't change directory: " . $ftps->last_message();
+  $ftps->login('anonymous', 'user@localhost');
 
-  $ftps->get("file") or die "Can't get file: " . $ftps->last_message();
+  $ftps->cwd("/pub");
+
+  $ftps->get("file");
 
   $ftps->quit();
 
-Had you included I<Croak =E<gt> 1> as an option to I<new>, you could have left
-off the I<or die> checks and your I<die> messages would be more specific to the
-actual problem encountered!
+Since I included I<Croak =E<gt> 1> as an option to I<new>, it automatically
+caled I<die> for me if any I<Net::FTPSSL> command failed.  So there was no need
+for any messy error checking in my code example!
 
 =head1 DESCRIPTION
 
@@ -3024,8 +3489,11 @@ B<DebugLogFile> - Redirects the output of B<Debug> from F<STDERR> to the
 requested error log file name.  This option is ignored unless B<Debug> is also
 turned on.  Enforced this way for backwards compatibility.  If B<Debug> is set
 to B<2>, the log file will be opened in I<append> mode instead of creating a
-new log file.  This file is closed when I<quit> is called and B<Debug> messages
-go back to F<STDERR> again afterwards.
+new log file.  This log file is closed when this class instance goes out of
+scope.
+
+Instead of a file name, you may instead specify an open file handle or GLOB and
+it will write the logs there insead.  (I<Not really recommended.>)
 
 B<Croak> - Force most methods to call I<croak()> on failure instead of returning
 I<FALSE>.  The default is to return I<FALSE> or I<undef> on failure.  When it
@@ -3047,7 +3515,8 @@ this hash take precedence.  If all you want to do is have the data channel use
 B<SSL_reuse_ctx>, just provide an empty hash.
 
 B<Buffer> - This is the block size that I<Net::FTPSSL> will use when a transfer
-is made. Default value is 10240.
+is made over the I<Data Channel>. Default value is 10240.  It does not affect
+the I<Command Channel>.
 
 B<Timeout> - Set a connection timeout value. Default value is 120.
 
@@ -3074,9 +3543,10 @@ say none of the commands are supported.  See I<supported()> for more details.
 This option can also be usefull when your server doesn't support the I<HELP>
 command itself and you need to trigger some of the conditional logic.
 
-B<SSL_Advanced> - Depreciated, use I<SSL_Client_Certificate> instead.  This is
-now just an alias for I<SSL_Client_Certificate> for backwards compatibility.
-If both are used, this option is ignored.
+B<SSL_Advanced> - Depreciated, use I<SSL_Client_Certificate> instead.  This
+option won't be supported much longer.  This is now just an alias for
+I<SSL_Client_Certificate> for backwards compatibility.  If both are used, this
+option is ignored.
 
 =back
 
@@ -3095,8 +3565,7 @@ Use the given information to log into the FTPS server.
 
 =item quit()
 
-This method breaks the connection to the FTPS server.  It will also close the
-file pointed to by option I<DebugLogFile>.
+This method breaks the connection to the FTPS server.
 
 =item force_epsv( [1/2] )
 
@@ -3161,6 +3630,16 @@ ASCII is the default transfer mode.
 =item binary()
 
 Sets the file transfer mode to binary. No I<CR LF> transformation will be done.
+
+=item mixedModeAI()
+
+Mixture of ASCII & binary mode.  The server does I<CR LF> transfernations while
+the client side does not.  (For a really weird server)
+
+=item mixedModeIA()
+
+Mixture of binary & ASCII mode.  The client does I<CR LF> transfernations while
+the server side does not.  (For a really weird server)
 
 =item put( LOCAL_FILE [, REMOTE_FILE [, OFFSET]] )
 
@@ -3421,11 +3900,6 @@ at this setting.  Once you execute the B<CCC> request, you will have to create
 a new I<Net::FTPSSL> object to secure the command channel again.  I<Due
 to security concerns it is recommended that you do not use this method.>
 
-If the version of I<IO::Socket::SSL> you have installed is too old, this
-function will not work since I<stop_SSL> won't be defined (like in v1.08).  So 
-it is recommended that you be on at least I<version 1.18> or later if you plan
-on using this function.
-
 =item supported( CMD [,SITE_OPT] )
 
 Returns B<TRUE> if the remote server supports the given command.  I<CMD> must
@@ -3560,6 +4034,37 @@ As a final note, should the data channel be empty, it is very likely that just
 the I<end_callback> function will be called without any calls to the I<callback>
 function.
 
+=item get_log_filehandle()
+
+Returns the open file handle for the file specified by the B<DebugLogFile>
+option specified by C<new()>.  If you did not use this option, it will return
+undef.
+
+Just be aware that once this object goes out of scope, the returned file handle
+becomes invalid.
+
+=item trapWarn()
+
+This method is only active if I<Debug> is turned on with I<DebugLogFile>
+provided as well.  Otherwise calling it does nothing.  This trap for I<warnings>
+is automatically turned off when the the instance of this class goes out of
+scope.  It returns B<1> if the trap was turned on, else B<0> if it wasn't.
+
+Calling this method causes all B<Perl> I<warnings> to be written to the log
+file you specified when you called I<new()>.  The I<warnings> will appear in
+the log file when they occur to assist in debugging this module.  It
+automatically puts the word I<WARNING:> in front of the message being logged.
+
+So this method is only really useful if you wish to open a B<CPAN> ticket to
+report a problem with I<Net::FTPSSL> and you think having the generated warning
+showing up in the logs will help in getting your issue resolved.
+
+You may call this method for multiple I<Net::FTPSSL> instances and it will
+cause the I<warning> to be written to multiple log files.
+
+If your program already traps I<warnings> before you call this method, this
+code will forward the warning to your trap logic as well.
+
 =back
 
 =head1 AUTHORS
@@ -3595,7 +4100,7 @@ collection of modules (libnet).
 
 Please report any bugs with a FTPS log file created via options B<Debug=E<gt>1>
 and B<DebugLogFile=E<gt>"file.txt"> along with your sample code at
-L<http://search.cpan.org/~cleach/Net-FTPSSL-0.24/FTPSSL.pm>.
+L<http://search.cpan.org/~cleach/Net-FTPSSL-0.25/FTPSSL.pm>.
 
 Patches are appreciated when a log file and sample code are also provided.
 

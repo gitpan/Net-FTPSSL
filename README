@@ -1,4 +1,4 @@
-Net-FTPSSL version 0.24
+Net-FTPSSL version 0.25
 =======================
 
 Net::FTPSSL is an object oriented Perl module which implements a simple
@@ -70,6 +70,7 @@ Once you make these changes, this test should work for you!
 
 You are on your own in creating the needed Client Certificate!
 
+
 TROUBLESHOOTING
 
 While support is very limited, a copy of the log file showing the problem
@@ -86,8 +87,13 @@ For test # 2, the desired log file is called:
 
 If these tests pass and it's your program that's failing, then I'd need a copy
 of a simple test program to demonstrate the error with Debug turned on and it's
-corresponding trace log.  You can turn it on with the following command:
+corresponding trace log.  You can turn on logging with the following command:
         Net::FTPSSL->new(server, ..., Debug => 1, DebugLogFile => "myLog.txt");
+
+Then call:   $ftpssl->trapWarn();
+
+This is so that any warnings generated will also show up in the log file.  This
+will provide context to any warnings.
 
 Just be aware that a particular FTPS command may fail if your FTPS server
 doesn't support that command or if your login doesn't have enough permissions
@@ -100,6 +106,7 @@ available to me for testing.
 For new functionality, it may help if you could temporarily grant me a login
 that I can test against.  Otherwise I may ask your help in beta testing new
 code.  My servers can't always support all possible configurations or behaviours.
+
 
 DEPENDENCIES
 
@@ -128,6 +135,9 @@ export PERL_MM_USE_DEFAULT=1
 You can get the same results by doing
      make test < /dev/null
 
+The Makefile.PL script also honors this enviornment variable for it's
+Net::HTTPTunnel check.
+
 
 SPECIAL ENVIRONMENT VARIABLES FOR RUNNING THE TEST SCRIPTS
 
@@ -139,6 +149,7 @@ export FTPSSL_SERVER=<your server>
 export FTPSSL_USER=<your user name>
 export FTPSSL_PWD=<your password>
 export FTPSSL_DIR=<defaut dir on server>
+export FTPSSL_MODE=<defaut Encryption mode on server>
 
 These variables are used if Net::HTTPTunnel is present
 export FTPSSL_PROXY_HOST=<your proxy server>

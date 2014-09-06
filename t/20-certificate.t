@@ -21,7 +21,20 @@ my $skipper = 10;
 
 # plan tests => 10;  # Can't use due to BEGIN block
 
-BEGIN { use_ok('Net::FTPSSL') }    # Test # 1
+BEGIN {
+   use_ok('Net::FTPSSL');    # Test # 1
+
+   # For systems where $ENV{HOME} doesn't exist!
+   if (! exists $ENV{HOME}) {
+      eval {
+         require File::HomeDir;
+         $ENV{HOME} = File::HomeDir->my_home ();
+      };
+      if ($@) {
+         $ENV{HOME} = ".";   # The current direcory is HOME!
+      }
+   }
+}
 
 sleep (1);  # So test 1 completes before the message prints!
 
@@ -41,7 +54,7 @@ my %certificate_hash = ( SSL_version   => "SSLv23",
                          SSL_key_file  => "$ENV{HOME}/Certificate/private.pem",
                          SSL_cert_file => "$ENV{HOME}/Certificate/pubkey.pem",
                          SSL_passwd_cb => sub { return ("my_password") },
-                         Timeout       => 60 );
+                         Timeout       => 30 );
 # -----------------------------------------------------------
 # **** END OF SECTION TO CUSTOMIZE! ****
 # -----------------------------------------------------------
@@ -126,7 +139,7 @@ SKIP: {
                       DataProtLevel => $data, useSSL => $encrypt_mode,
                       SSL_Client_Certificate => \%certificate_hash,
                       Croak => 1,
-                      Timeout => 121, Debug => 1, Trace => 1 );
+                      Timeout => 30, Debug => 1, Trace => 1 );
 
     # Set if we are going through a proxy server ...
     if (defined $proxy) {
@@ -139,6 +152,9 @@ SKIP: {
     my $ftp = Net::FTPSSL->new( $server, \%ftps_opts );
 
     isa_ok( $ftp, 'Net::FTPSSL', 'Net::FTPSSL object creation' );
+
+    $SIG{__WARNING__} = "IGNORE";
+    $ftp->trapWarn (1);   # Merges all warnings into the log file.  Uses special case option.
 
     ok( $ftp->login ($user, $pass), "Login to $server" );
 
